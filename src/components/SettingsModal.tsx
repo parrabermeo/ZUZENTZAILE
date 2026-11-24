@@ -174,7 +174,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const handleTest = async () => {
     setTesting(true);
     setTestResult(null);
-    const res = await testGeminiConnection(apiKey, model);
+    const res = await testGeminiConnection(effectiveKey, model);
     setTesting(false);
     if (res.ok) {
       setTestResult({ ok: true, message: t.settings.connectionOk });
@@ -681,7 +681,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </button>
               </div>
               <p className="text-[11px] text-slate-500">
-                {hasEnvKey ? t.settings.envKeyActive : t.settings.envKeyMissing}
+                {settings.geminiApiKey
+                  ? t.settings.cloudKeySyncedHint
+                  : hasEnvKey
+                    ? t.settings.envKeyActive
+                    : t.settings.envKeyMissing}
               </p>
 
               {testResult && (

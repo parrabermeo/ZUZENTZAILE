@@ -3,6 +3,7 @@ import {
   doc,
   getDocs,
   onSnapshot,
+  setDoc,
   writeBatch,
   type Unsubscribe,
 } from 'firebase/firestore';
@@ -10,12 +11,15 @@ import { db } from '../firebase.js';
 import type {
   ClassGroup,
   EvaluationRecord,
+  GeminiModelId,
+  Language,
   Rubric,
   SavedTestDefinition,
   StoredImageAsset,
   Student,
 } from '../types';
 import { createDefaultGroups } from '../data/sampleData';
+import { setSyncedGeminiApiKey } from './geminiService';
 import { migrateWorkspaceState, type WorkspaceState } from './storageService';
 
 export const FIRESTORE_COLLECTIONS = {
@@ -24,7 +28,87 @@ export const FIRESTORE_COLLECTIONS = {
   TESTS: 'pruebas',
   EVALUATIONS: 'evaluaciones',
   RUBRICS: 'rubricas',
+  CONFIG: 'config',
 } as const;
+
+export const FIRESTORE_TEACHER_SETTINGS_DOC = 'teacherSettings' as const;
+
+export interface CloudTeacherSettings {
+  geminiApiKey?: string;
+  geminiModel?: GeminiModelId;
+  language?: Language;
+  updatedAt?: string;
+}
+
+function isValidCloudGeminiModel(val: unknown): val is GeminiModelId {
+  return val === 'gemini-4-hydrogen' || val === 'gemini-4-neon' || val === 'gemini-3.8-flash';
+}
+
+/**
+ * Persists the teacher's Gemini API key (and model/language preference) into
+ * Cloud Firestore `config/teacherSettings` using `{ merge: true }`.
+ */
+export async function saveTeacherSettingsToFirestore(
+  settings: Partial<CloudTeacherSettings>
+): Promise<void> {
+  const payload = stripUndefinedDeep({
+    ...settings,
+    updatedAt: new Date().toISOString(),
+  });
+  await setDoc(doc(db, FIRESTORE_COLLECTIONS.CONFIG, FIRESTORE_TEACHER_SETTINGS_DOC), payload, {
+    merge: true,
+  });
+}
+
+/**
+ * Subscribes in real time (`onSnapshot`) to `config/teacherSettings`.
+ * - If Firestore already holds a non-empty `geminiApiKey`, updates `geminiService`
+ *   and notifies the app immediately (which also caches it in localStorage for offline use).
+ * - If Firestore does NOT yet have a key, and a local/env key exists, uploads it once
+ *   automatically via `setDoc(..., { merge: true })`.
+ */
+export function subscribeToTeacherSettings(
+  localFallbackKey: string,
+  onRemoteSettings: (data: CloudTeacherSettings) => void,
+  onError?: (error: Error) => void
+): Unsubscribe {
+  const ref = doc(db, FIRESTORE_COLLECTIONS.CONFIG, FIRESTORE_TEACHER_SETTINGS_DOC);
+  let seededLocalKey = false;
+
+  return onSnapshot(
+    ref,
+    (snap) => {
+      const data = snap.exists() ? (snap.data() as Record<string, unknown>) : null;
+      const remoteKey = typeof data?.geminiApiKey === 'string' ? data.geminiApiKey.trim() : '';
+      const remoteModel = isValidCloudGeminiModel(data?.geminiModel)
+        ? data.geminiModel
+        : undefined;
+
+      if (remoteKey) {
+        setSyncedGeminiApiKey(remoteKey);
+        onRemoteSettings({
+          geminiApiKey: remoteKey,
+          geminiModel: remoteModel,
+        });
+        return;
+      }
+
+      // First-time seed: Firestore has no key yet, so upload existing localStorage / env key once
+      const cleanLocal = localFallbackKey.trim();
+      if (cleanLocal && !seededLocalKey) {
+        seededLocalKey = true;
+        setSyncedGeminiApiKey(cleanLocal);
+        void saveTeacherSettingsToFirestore({ geminiApiKey: cleanLocal }).catch((err) => {
+          console.warn('[Firestore seed teacherSettings]', err);
+        });
+      }
+    },
+    (err) => {
+      console.warn('[Firestore teacherSettings onSnapshot]', err);
+      onError?.(err);
+    }
+  );
+}
 
 const MAX_BATCH_OPS = 350;
 const SAFE_DOC_MAX_BYTES = 920_000; // Guard safely under Firestore's 1,048,576 byte (1 MB) limit

@@ -48,10 +48,13 @@ import {
 import { saveWorkspaceToIdb } from './services/indexedDbService';
 import {
   resetFirestoreSyncCache,
+  saveTeacherSettingsToFirestore,
   seedFirestoreIfEmpty,
   subscribeToFirestoreWorkspace,
+  subscribeToTeacherSettings,
   syncWorkspaceDiffToFirestore,
 } from './services/firestoreSyncService';
+import { getEnvGeminiApiKey, setSyncedGeminiApiKey } from './services/geminiService';
 import {
   getLinkedMasterFileState,
   isFileSystemAccessSupported,
@@ -224,6 +227,7 @@ export function App() {
 
   const handleSignOut = async () => {
     resetFirestoreSyncCache();
+    setSyncedGeminiApiKey('');
     hydratedRef.current = false;
     await signOut(auth);
     setAuthUser(null);
@@ -231,12 +235,41 @@ export function App() {
   };
 
   // Once authenticated: hydrate IndexedDB (migrating localStorage if needed), seed empty Firestore,
-  // and attach real-time onSnapshot listeners across grupos, alumnos, pruebas, evaluaciones, rubricas.
+  // and attach real-time onSnapshot listeners across grupos, alumnos, pruebas, evaluaciones, rubricas
+  // plus config/teacherSettings (Gemini API key).
   useEffect(() => {
     if (!authUser) return;
 
     let cancelled = false;
     let unsubscribeFirestore: (() => void) | null = null;
+    let unsubscribeTeacherSettings: (() => void) | null = null;
+
+    // Subscribe to Cloud Firestore config/teacherSettings for instant cross-device API key sync
+    const initialLocalOrEnvKey =
+      settingsRef.current.geminiApiKey.trim() || getEnvGeminiApiKey();
+    unsubscribeTeacherSettings = subscribeToTeacherSettings(
+      initialLocalOrEnvKey,
+      (remoteConfig) => {
+        if (cancelled) return;
+        const incomingKey = remoteConfig.geminiApiKey?.trim();
+        if (!incomingKey) return;
+
+        setSyncedGeminiApiKey(incomingKey);
+        setSettings((prev) => {
+          const nextModel = remoteConfig.geminiModel || prev.geminiModel;
+          if (prev.geminiApiKey === incomingKey && prev.geminiModel === nextModel) {
+            return prev;
+          }
+          const updated: AppSettings = {
+            ...prev,
+            geminiApiKey: incomingKey,
+            geminiModel: nextModel,
+          };
+          saveSettings(updated);
+          return updated;
+        });
+      }
+    );
 
     const bootstrapSync = async () => {
       const [localResult, linkedState] = await Promise.all([
@@ -302,6 +335,7 @@ export function App() {
     return () => {
       cancelled = true;
       if (unsubscribeFirestore) unsubscribeFirestore();
+      if (unsubscribeTeacherSettings) unsubscribeTeacherSettings();
     };
   }, [authUser, pushToast]);
 
@@ -409,9 +443,23 @@ export function App() {
   };
 
   const handleSaveSettings = (nextSettings: AppSettings) => {
-    setSettings(nextSettings);
-    saveSettings(nextSettings);
-    pushToast(translations[nextSettings.language].toasts.settingsSaved, 'success');
+    const cleanKey = nextSettings.geminiApiKey.trim();
+    const normalized: AppSettings = { ...nextSettings, geminiApiKey: cleanKey };
+    setSettings(normalized);
+    saveSettings(normalized);
+    setSyncedGeminiApiKey(cleanKey);
+
+    if (authUser) {
+      void saveTeacherSettingsToFirestore({
+        geminiApiKey: cleanKey,
+        geminiModel: normalized.geminiModel,
+        language: normalized.language,
+      }).catch((err) => {
+        console.warn('[Firestore saveTeacherSettings]', err);
+      });
+    }
+
+    pushToast(translations[normalized.language].toasts.settingsSaved, 'success');
   };
 
   // Group CRUD

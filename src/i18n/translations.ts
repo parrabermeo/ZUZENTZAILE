@@ -314,6 +314,8 @@ export const translations = {
       apiKeyPlaceholder: 'AIza... / AQ...',
       envKeyActive:
         '.env fitxategiko VITE_GEMINI_API_KEY automatikoki aktibo dago. Utzi eremu hau hutsik lehenetsia erabiltzeko edo idatzi beste gako bat probatzeko.',
+      cloudKeySyncedHint:
+        'API gakoa Cloud Firestore-rekin (config/teacherSettings) eta localStorage-rekin sinkronizatuta dago zure gailu guztietan.',
       envKeyMissing:
         'Gakoa nabigatzailean soilik gordetzen da (localStorage) edo .env fitxategiko VITE_GEMINI_API_KEY bidez karga daiteke.',
       testConnection: 'Probatu konexioa',
@@ -1022,6 +1024,8 @@ export const translations = {
       apiKeyPlaceholder: 'AIza... / AQ...',
       envKeyActive:
         'VITE_GEMINI_API_KEY de .env está activa automáticamente por defecto. Deja este campo vacío para usarla o escribe otra clave solo si quieres probar una distinta.',
+      cloudKeySyncedHint:
+        'La clave API está sincronizada con Cloud Firestore (config/teacherSettings) y guardada en localStorage para todos tus dispositivos.',
       envKeyMissing:
         'Se guarda localmente en tu navegador (localStorage) o puede definirse mediante VITE_GEMINI_API_KEY.',
       testConnection: 'Probar conexión',

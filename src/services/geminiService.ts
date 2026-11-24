@@ -242,6 +242,16 @@ function withRequestTimeout<T>(promise: Promise<T>, timeoutMs: number, label: st
   });
 }
 
+let syncedCloudGeminiApiKey = '';
+
+export function setSyncedGeminiApiKey(apiKey: string): void {
+  syncedCloudGeminiApiKey = typeof apiKey === 'string' ? apiKey.trim() : '';
+}
+
+export function getSyncedGeminiApiKey(): string {
+  return syncedCloudGeminiApiKey;
+}
+
 export function getEnvGeminiApiKey(): string {
   const envKey = import.meta.env.VITE_GEMINI_API_KEY;
   return typeof envKey === 'string' ? envKey.trim() : '';
@@ -250,6 +260,7 @@ export function getEnvGeminiApiKey(): string {
 export function resolveGeminiApiKey(userApiKey?: string): string {
   const manual = userApiKey?.trim();
   if (manual) return manual;
+  if (syncedCloudGeminiApiKey) return syncedCloudGeminiApiKey;
   return getEnvGeminiApiKey();
 }
 
