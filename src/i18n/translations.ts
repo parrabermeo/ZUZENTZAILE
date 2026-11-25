@@ -744,6 +744,8 @@ export const translations = {
       pcFileReauthorized: (name: string) => `PC-ko auto-gordetzea berriz aktibatuta (${name}).`,
       pcFileError: 'Ezin izan da PC-ko fitxategian idatzi. Egiaztatu baimenak Ezarpenetan.',
       firestoreMigrated: 'Zure datu eta argazki lokalak Cloud Firestore-ra igo dira automatikoki!',
+      firestoreSyncError: (detail: string) =>
+        `Errorea Cloud Firestore-rekin sinkronizatzean (datuak lokalki IndexedDB-n gordeta mantendu dira): ${detail}`,
       signedOut: 'Saioa itxi da.',
       driveImageLoaded: 'Irudia Google Drive-tik kargatu da.',
       rubricSaved: (title: string) => `"${title}" errubrika gorde da.`,
@@ -1456,6 +1458,8 @@ export const translations = {
       pcFileReauthorized: (name: string) => `Auto-guardado en PC reactivado (${name}).`,
       pcFileError: 'No se pudo escribir en el archivo del PC. Comprueba los permisos en Ajustes.',
       firestoreMigrated: '¡Tus datos y fotos locales se han sincronizado automáticamente con Cloud Firestore!',
+      firestoreSyncError: (detail: string) =>
+        `Error al sincronizar con Cloud Firestore (tus datos siguen a salvo en IndexedDB local): ${detail}`,
       signedOut: 'Sesión cerrada correctamente.',
       driveImageLoaded: 'Imagen cargada desde Google Drive.',
       rubricSaved: (title: string) => `Rúbrica "${title}" guardada.`,

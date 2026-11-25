@@ -45,7 +45,10 @@ import {
   saveSettings,
   saveWorkspace,
 } from './services/storageService';
-import { saveWorkspaceToIdb } from './services/indexedDbService';
+import {
+  rehydrateWorkspaceImagesFromIdb,
+  saveWorkspaceToIdb,
+} from './services/indexedDbService';
 import {
   resetFirestoreSyncCache,
   saveTeacherSettingsToFirestore,
@@ -66,7 +69,12 @@ import {
 } from './services/fileSyncService';
 import { LoginScreen } from './components/LoginScreen';
 import { createStudentRecord, generateNextStudentCode } from './utils/studentImporter';
-import { resolveEvaluationSubject, skillToModalityEs } from './utils/subjects';
+import {
+  normalizeEvaluationRecord,
+  normalizeSavedTestDefinition,
+  resolveEvaluationSubject,
+  skillToModalityEs,
+} from './utils/subjects';
 import { SECTION_THEMES } from './utils/sectionThemes';
 import { createSampleClassroom } from './data/sampleData';
 import { Sidebar } from './components/Sidebar';
@@ -302,29 +310,45 @@ export function App() {
           pushToast(translations[settingsRef.current.language].toasts.firestoreMigrated, 'success');
         }
       } catch (seedErr) {
-        console.warn('[Firestore seed]', seedErr);
+        const msg = seedErr instanceof Error ? seedErr.message : String(seedErr);
+        console.error('[Firestore seed]', seedErr);
+        if (!cancelled) {
+          pushToast(
+            translations[settingsRef.current.language].toasts.firestoreSyncError(msg),
+            'error'
+          );
+        }
       }
 
       if (cancelled) return;
 
-      // Subscribe to real-time updates from Cloud Firestore across all 5 collections
+      // Subscribe to real-time updates from Cloud Firestore across all 5 collections.
+      // Rehydrates local Base64 images from IndexedDB so photos on this device are never lost.
       unsubscribeFirestore = subscribeToFirestoreWorkspace(
         (remoteState) => {
-          if (cancelled) return;
-          skipNextPersistRef.current = true;
-          setGroups(remoteState.groups);
-          setStudents(remoteState.students);
-          setRubrics(remoteState.rubrics);
-          setSavedTests(remoteState.savedTests || []);
-          setStorageMode('firestore');
-          hydratedRef.current = true;
+          void rehydrateWorkspaceImagesFromIdb(remoteState).then((hydratedRemote) => {
+            if (cancelled) return;
+            skipNextPersistRef.current = true;
+            setGroups(hydratedRemote.groups);
+            setStudents(hydratedRemote.students);
+            setRubrics(hydratedRemote.rubrics);
+            setSavedTests(hydratedRemote.savedTests || []);
+            setStorageMode('firestore');
+            hydratedRef.current = true;
 
-          // Keep local IndexedDB mirror completely up-to-date with remote changes
-          void saveWorkspaceToIdb(remoteState).catch(() => undefined);
+            // Keep local IndexedDB mirror completely up-to-date while preserving local Base64 images
+            void saveWorkspaceToIdb(hydratedRemote).catch((idbErr) => {
+              console.error('[IndexedDB mirror save]', idbErr);
+            });
+          });
         },
-        () => {
+        (snapErr) => {
           if (!cancelled) {
             setStorageMode('indexeddb');
+            pushToast(
+              translations[settingsRef.current.language].toasts.firestoreSyncError(snapErr.message),
+              'error'
+            );
           }
         }
       );
@@ -350,19 +374,26 @@ export function App() {
     let cancelled = false;
     const workspaceSnapshot = { groups, students, rubrics, savedTests };
 
-    // 1. Immediate atomic write to local IndexedDB
-    saveWorkspace(workspaceSnapshot, { ...settings, firebaseConfig: undefined }).catch(
-      () => undefined
-    );
+    // 1. Immediate atomic write to local IndexedDB (preserving full Base64 images locally)
+    saveWorkspace(workspaceSnapshot, { ...settings, firebaseConfig: undefined }).catch((idbErr) => {
+      console.error('[IndexedDB saveWorkspace]', idbErr);
+    });
 
-    // 2. Real-time diff sync to Cloud Firestore (individual docs per evaluation)
+    // 2. Real-time lightweight diff sync to Cloud Firestore (ZERO Base64 images, never fails silently)
     syncWorkspaceDiffToFirestore(workspaceSnapshot)
       .then(() => {
         if (!cancelled) setStorageMode('firestore');
       })
       .catch((err) => {
-        console.warn('[Firestore diff sync]', err);
-        if (!cancelled) setStorageMode('indexeddb');
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[Firestore diff sync]', err);
+        if (!cancelled) {
+          setStorageMode('indexeddb');
+          pushToast(
+            translations[settingsRef.current.language].toasts.firestoreSyncError(msg),
+            'error'
+          );
+        }
       });
 
     // 3. Debounced background auto-save to linked PC master .json file (if linked)
@@ -455,7 +486,12 @@ export function App() {
         geminiModel: normalized.geminiModel,
         language: normalized.language,
       }).catch((err) => {
-        console.warn('[Firestore saveTeacherSettings]', err);
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[Firestore saveTeacherSettings]', err);
+        pushToast(
+          translations[normalized.language].toasts.firestoreSyncError(msg),
+          'error'
+        );
       });
     }
 
@@ -573,7 +609,11 @@ export function App() {
   };
 
   // Save Evaluation into Student's Dossier (Module 3)
-  const handleSaveEvaluation = (studentId: string, record: EvaluationRecord) => {
+  const handleSaveEvaluation = (studentId: string, rawRecord: EvaluationRecord) => {
+    const record = normalizeEvaluationRecord({
+      ...rawRecord,
+      studentId,
+    });
     const targetStudent = students.find((s) => s.id === studentId);
     setStudents((prev) =>
       prev.map((s) => {
@@ -602,12 +642,17 @@ export function App() {
     }
   };
 
-  // Save Batch PDF Evaluations atomically into all validated student dossiers
+  // Save Batch Evaluations atomically into all validated student dossiers
   const handleSaveBatchEvaluations = (
     entries: Array<{ studentId: string; record: EvaluationRecord }>
   ) => {
     if (entries.length === 0) return;
-    const byStudentId = new Map(entries.map((e) => [e.studentId, e.record]));
+    const byStudentId = new Map(
+      entries.map((e) => [
+        e.studentId,
+        normalizeEvaluationRecord({ ...e.record, studentId: e.studentId }),
+      ])
+    );
     const now = new Date().toISOString();
 
     setStudents((prev) =>
@@ -637,7 +682,8 @@ export function App() {
   };
 
   // Update a single saved evaluation inside a student's full-screen dossier
-  const handleUpdateEvaluation = (studentId: string, updated: EvaluationRecord) => {
+  const handleUpdateEvaluation = (studentId: string, rawUpdated: EvaluationRecord) => {
+    const updated = normalizeEvaluationRecord({ ...rawUpdated, studentId });
     setStudents((prev) =>
       prev.map((s) =>
         s.id === studentId
@@ -669,7 +715,8 @@ export function App() {
   };
 
   // Save a test definition without student works yet (so it appears in Proben Historiala with 0 evaluated)
-  const handleSaveTestWithoutWork = (testDef: SavedTestDefinition) => {
+  const handleSaveTestWithoutWork = (rawTestDef: SavedTestDefinition) => {
+    const testDef = normalizeSavedTestDefinition(rawTestDef);
     setSavedTests((prev) => {
       const normalizedTitle = testDef.title.trim().toLowerCase();
       const existingIdx = prev.findIndex(

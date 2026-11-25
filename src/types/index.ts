@@ -87,8 +87,9 @@ export interface AiEvaluationDraft {
 export interface StoredImageAsset {
   id: string;
   name: string;
-  dataUrl: string; // Compact archival JPEG data URL for localStorage/Firestore
+  dataUrl: string; // Compact archival JPEG data URL kept locally in IndexedDB (never sent to Firestore)
   sizeKb?: number;
+  driveUrl?: string; // Optional Google Drive shared URL (lightweight string synced to Firestore)
 }
 
 export interface BatchEvaluationItem {
@@ -134,6 +135,9 @@ export interface SavedTestDefinition {
   rubricTitle?: string;
   context?: string;
   pruebaImagenes?: StoredImageAsset[];
+  hasLocalImage?: boolean;
+  localReferenceImageCount?: number;
+  driveImageUrls?: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -152,8 +156,12 @@ export interface EvaluationRecord {
   language: Language;
   title: string;
   context?: string;
-  pruebaImagenes?: StoredImageAsset[]; // Compressed images of the reference test/reading prompt
-  studentImages?: StoredImageAsset[]; // Compressed images of the student's handwritten sheet
+  pruebaImagenes?: StoredImageAsset[]; // Compressed images of the reference test/reading prompt (IndexedDB local)
+  studentImages?: StoredImageAsset[]; // Compressed images of the student's handwritten sheet (IndexedDB local)
+  hasLocalImage?: boolean; // Lightweight Firestore indicator (true when local Base64 images exist in IndexedDB)
+  localReferenceImageCount?: number;
+  localStudentImageCount?: number;
+  driveImageUrls?: string[]; // Optional lightweight Google Drive links synced to Firestore
   inputMode?: 'text' | 'image' | 'photo_batch' | 'pdf_batch';
   photoNumbers?: string;
   transcription?: string;

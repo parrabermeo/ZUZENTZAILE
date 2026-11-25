@@ -3,6 +3,7 @@ import type {
   EvaluationRecord,
   Rubric,
   SavedTestDefinition,
+  StoredImageAsset,
   Student,
 } from '../types';
 
@@ -43,8 +44,20 @@ export const IDB_WORKSPACE_KEYS = {
   RUBRICS: 'rubrics',
   SAVED_TESTS: 'savedTests',
   EVALUATIONS: 'evaluations',
+  IMAGE_INDEX: 'imageIndex', // Local-only Base64 archive for rehydrating Firestore snapshots
   META: 'meta',
 } as const;
+
+export interface LocalImageIndex {
+  evalImages: Record<
+    string,
+    {
+      pruebaImagenes?: StoredImageAsset[];
+      studentImages?: StoredImageAsset[];
+    }
+  >;
+  testImages: Record<string, StoredImageAsset[]>;
+}
 
 export const IDB_HANDLE_KEYS = {
   MASTER_BACKUP: 'master_backup_handle',
@@ -220,19 +233,142 @@ export interface IdbWorkspaceReadResult {
   meta: IdbWorkspaceMeta | null;
 }
 
+function applyImageIndexToState(
+  state: IdbWorkspacePayload,
+  imageIndex: LocalImageIndex | undefined
+): IdbWorkspacePayload {
+  if (!imageIndex) return state;
+
+  const nextSavedTests = (state.savedTests || []).map((test) => {
+    if (test.pruebaImagenes && test.pruebaImagenes.length > 0) return test;
+    const cached = imageIndex.testImages?.[test.id];
+    if (cached && cached.length > 0) {
+      return {
+        ...test,
+        pruebaImagenes: cached,
+        hasLocalImage: true,
+      };
+    }
+    return test;
+  });
+
+  const nextStudents = (state.students || []).map((st) => {
+    let changed = false;
+    const nextEvals = (st.evaluations || []).map((ev) => {
+      const cached = imageIndex.evalImages?.[ev.id];
+      if (!cached) return ev;
+
+      const needsRef =
+        (!ev.pruebaImagenes || ev.pruebaImagenes.length === 0) &&
+        cached.pruebaImagenes &&
+        cached.pruebaImagenes.length > 0;
+      const needsStudent =
+        (!ev.studentImages || ev.studentImages.length === 0) &&
+        cached.studentImages &&
+        cached.studentImages.length > 0;
+
+      if (!needsRef && !needsStudent) return ev;
+      changed = true;
+      return {
+        ...ev,
+        pruebaImagenes: needsRef ? cached.pruebaImagenes : ev.pruebaImagenes,
+        studentImages: needsStudent ? cached.studentImages : ev.studentImages,
+        hasLocalImage: true,
+      };
+    });
+
+    return changed ? { ...st, evaluations: nextEvals } : st;
+  });
+
+  return {
+    ...state,
+    students: nextStudents,
+    savedTests: nextSavedTests,
+  };
+}
+
+function mergeIntoImageIndex(
+  existing: LocalImageIndex | undefined,
+  state: IdbWorkspacePayload
+): LocalImageIndex {
+  const evalImages: LocalImageIndex['evalImages'] = { ...(existing?.evalImages || {}) };
+  const testImages: LocalImageIndex['testImages'] = { ...(existing?.testImages || {}) };
+
+  for (const test of state.savedTests || []) {
+    if (test.pruebaImagenes && test.pruebaImagenes.length > 0) {
+      testImages[test.id] = test.pruebaImagenes;
+    }
+  }
+
+  for (const st of state.students || []) {
+    for (const ev of st.evaluations || []) {
+      const hasRef = Boolean(ev.pruebaImagenes && ev.pruebaImagenes.length > 0);
+      const hasStu = Boolean(ev.studentImages && ev.studentImages.length > 0);
+      if (hasRef || hasStu) {
+        const prev = evalImages[ev.id] || {};
+        evalImages[ev.id] = {
+          pruebaImagenes: hasRef ? ev.pruebaImagenes : prev.pruebaImagenes,
+          studentImages: hasStu ? ev.studentImages : prev.studentImages,
+        };
+      }
+    }
+  }
+
+  return { evalImages, testImages };
+}
+
+/**
+ * Rehydrates Base64 images stored locally in IndexedDB (`imageIndex`) onto a
+ * lightweight workspace snapshot received from Cloud Firestore.
+ */
+export async function rehydrateWorkspaceImagesFromIdb(
+  state: IdbWorkspacePayload
+): Promise<IdbWorkspacePayload> {
+  if (!isIndexedDbAvailable()) return state;
+  try {
+    const db = await openEbaluazioaDb();
+    const tx = db.transaction(IDB_STORES.WORKSPACE, 'readonly');
+    const store = tx.objectStore(IDB_STORES.WORKSPACE);
+    const [imageIndex, storedStudents, storedTests] = await Promise.all([
+      requestToPromise<LocalImageIndex | undefined>(store.get(IDB_WORKSPACE_KEYS.IMAGE_INDEX)),
+      requestToPromise<Student[] | undefined>(store.get(IDB_WORKSPACE_KEYS.STUDENTS)),
+      requestToPromise<SavedTestDefinition[] | undefined>(
+        store.get(IDB_WORKSPACE_KEYS.SAVED_TESTS)
+      ),
+    ]);
+    await transactionDone(tx);
+
+    // Also harvest any Base64 images already on legacy IndexedDB records before imageIndex existed
+    const combinedIndex = mergeIntoImageIndex(imageIndex, {
+      groups: [],
+      students: Array.isArray(storedStudents) ? storedStudents : [],
+      rubrics: [],
+      savedTests: Array.isArray(storedTests) ? storedTests : [],
+    });
+
+    return applyImageIndexToState(state, combinedIndex);
+  } catch {
+    return state;
+  }
+}
+
 export async function readWorkspaceFromIdb(): Promise<IdbWorkspaceReadResult> {
   const db = await openEbaluazioaDb();
   const tx = db.transaction(IDB_STORES.WORKSPACE, 'readonly');
   const store = tx.objectStore(IDB_STORES.WORKSPACE);
 
-  const [groups, students, rubrics, savedTests, flatEvaluations, meta] = await Promise.all([
-    requestToPromise<ClassGroup[] | undefined>(store.get(IDB_WORKSPACE_KEYS.GROUPS)),
-    requestToPromise<Student[] | undefined>(store.get(IDB_WORKSPACE_KEYS.STUDENTS)),
-    requestToPromise<Rubric[] | undefined>(store.get(IDB_WORKSPACE_KEYS.RUBRICS)),
-    requestToPromise<SavedTestDefinition[] | undefined>(store.get(IDB_WORKSPACE_KEYS.SAVED_TESTS)),
-    requestToPromise<EvaluationRecord[] | undefined>(store.get(IDB_WORKSPACE_KEYS.EVALUATIONS)),
-    requestToPromise<IdbWorkspaceMeta | undefined>(store.get(IDB_WORKSPACE_KEYS.META)),
-  ]);
+  const [groups, students, rubrics, savedTests, flatEvaluations, imageIndex, meta] =
+    await Promise.all([
+      requestToPromise<ClassGroup[] | undefined>(store.get(IDB_WORKSPACE_KEYS.GROUPS)),
+      requestToPromise<Student[] | undefined>(store.get(IDB_WORKSPACE_KEYS.STUDENTS)),
+      requestToPromise<Rubric[] | undefined>(store.get(IDB_WORKSPACE_KEYS.RUBRICS)),
+      requestToPromise<SavedTestDefinition[] | undefined>(
+        store.get(IDB_WORKSPACE_KEYS.SAVED_TESTS)
+      ),
+      requestToPromise<EvaluationRecord[] | undefined>(store.get(IDB_WORKSPACE_KEYS.EVALUATIONS)),
+      requestToPromise<LocalImageIndex | undefined>(store.get(IDB_WORKSPACE_KEYS.IMAGE_INDEX)),
+      requestToPromise<IdbWorkspaceMeta | undefined>(store.get(IDB_WORKSPACE_KEYS.META)),
+    ]);
 
   await transactionDone(tx);
 
@@ -252,21 +388,27 @@ export async function readWorkspaceFromIdb(): Promise<IdbWorkspaceReadResult> {
     flatEvaluations
   );
 
-  return {
-    hasData: true,
-    state: {
+  const hydrated = applyImageIndexToState(
+    {
       groups: Array.isArray(groups) ? groups : [],
       students: normalizedStudents,
       rubrics: Array.isArray(rubrics) ? rubrics : [],
       savedTests: Array.isArray(savedTests) ? savedTests : [],
     },
+    imageIndex
+  );
+
+  return {
+    hasData: true,
+    state: hydrated,
     meta: meta || null,
   };
 }
 
 /**
  * Atomically saves the entire workspace (groups, students, rubrics, savedTests,
- * flat evaluations index, and metadata) into IndexedDB with zero image pruning.
+ * flat evaluations index, local Base64 imageIndex, and metadata) into IndexedDB
+ * with zero image pruning.
  */
 export async function saveWorkspaceToIdb(
   state: IdbWorkspacePayload,
@@ -276,30 +418,35 @@ export async function saveWorkspaceToIdb(
   const tx = db.transaction(IDB_STORES.WORKSPACE, 'readwrite');
   const store = tx.objectStore(IDB_STORES.WORKSPACE);
 
-  const existingMeta = await requestToPromise<IdbWorkspaceMeta | undefined>(
-    store.get(IDB_WORKSPACE_KEYS.META)
-  );
+  const [existingMeta, existingImageIndex] = await Promise.all([
+    requestToPromise<IdbWorkspaceMeta | undefined>(store.get(IDB_WORKSPACE_KEYS.META)),
+    requestToPromise<LocalImageIndex | undefined>(store.get(IDB_WORKSPACE_KEYS.IMAGE_INDEX)),
+  ]);
 
-  const flatEvaluations = collectFlatEvaluations(state.students);
+  const nextImageIndex = mergeIntoImageIndex(existingImageIndex, state);
+  const rehydratedState = applyImageIndexToState(state, nextImageIndex);
+
+  const flatEvaluations = collectFlatEvaluations(rehydratedState.students);
   const meta: IdbWorkspaceMeta = {
     schemaVersion: IDB_DB_VERSION,
     dbName: IDB_DB_NAME,
     migratedFromLocalStorageAt:
       options?.migratedFromLocalStorageAt || existingMeta?.migratedFromLocalStorageAt,
     updatedAt: new Date().toISOString(),
-    groupCount: state.groups.length,
-    studentCount: state.students.length,
-    rubricCount: state.rubrics.length,
-    savedTestCount: state.savedTests.length,
+    groupCount: rehydratedState.groups.length,
+    studentCount: rehydratedState.students.length,
+    rubricCount: rehydratedState.rubrics.length,
+    savedTestCount: rehydratedState.savedTests.length,
     evaluationCount: flatEvaluations.length,
-    imageCount: countEmbeddedImages(state),
+    imageCount: countEmbeddedImages(rehydratedState),
   };
 
-  store.put(state.groups, IDB_WORKSPACE_KEYS.GROUPS);
-  store.put(state.students, IDB_WORKSPACE_KEYS.STUDENTS);
-  store.put(state.rubrics, IDB_WORKSPACE_KEYS.RUBRICS);
-  store.put(state.savedTests, IDB_WORKSPACE_KEYS.SAVED_TESTS);
+  store.put(rehydratedState.groups, IDB_WORKSPACE_KEYS.GROUPS);
+  store.put(rehydratedState.students, IDB_WORKSPACE_KEYS.STUDENTS);
+  store.put(rehydratedState.rubrics, IDB_WORKSPACE_KEYS.RUBRICS);
+  store.put(rehydratedState.savedTests, IDB_WORKSPACE_KEYS.SAVED_TESTS);
   store.put(flatEvaluations, IDB_WORKSPACE_KEYS.EVALUATIONS);
+  store.put(nextImageIndex, IDB_WORKSPACE_KEYS.IMAGE_INDEX);
   store.put(meta, IDB_WORKSPACE_KEYS.META);
 
   await transactionDone(tx);

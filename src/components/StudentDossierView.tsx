@@ -161,6 +161,11 @@ export const StudentDossierView: React.FC<StudentDossierViewProps> = ({
 
   useEffect(() => {
     setExpandedPruebaIds({});
+    if (euskeraEvals.length === 0 && castellanoEvals.length > 0) {
+      setActiveSubject('castellano');
+    } else if (castellanoEvals.length === 0 && euskeraEvals.length > 0) {
+      setActiveSubject('euskera');
+    }
   }, [student.id]);
 
   const togglePruebaExpanded = (evalId: string) => {

@@ -21,6 +21,10 @@ import type {
 import { createDefaultGroups } from '../data/sampleData';
 import { setSyncedGeminiApiKey } from './geminiService';
 import { migrateWorkspaceState, type WorkspaceState } from './storageService';
+import {
+  normalizeEvaluationRecord,
+  normalizeSavedTestDefinition,
+} from '../utils/subjects';
 
 export const FIRESTORE_COLLECTIONS = {
   GROUPS: 'grupos',
@@ -44,6 +48,222 @@ function isValidCloudGeminiModel(val: unknown): val is GeminiModelId {
   return val === 'gemini-4-hydrogen' || val === 'gemini-4-neon' || val === 'gemini-3.8-flash';
 }
 
+const MAX_BATCH_OPS = 350;
+
+/**
+ * Heavy image / Base64 keys that MUST NEVER be uploaded to Cloud Firestore.
+ * All Base64 images stay exclusively in local IndexedDB (`EbaluazioaLH6_DB`)
+ * and are rehydrated locally on read.
+ */
+const FORBIDDEN_FIRESTORE_IMAGE_KEYS = new Set<string>([
+  'pruebaImagenes',
+  'studentImages',
+  'imageDataUrl',
+  'referenceImages',
+  'enunciadoImagenes',
+  'imagenPrueba',
+  'enunciadoImagen',
+  'referenceImage',
+  'testImages',
+  'enunciadoFotos',
+  'readingImages',
+  'imagenEnunciado',
+  'testImage',
+]);
+
+type FirestoreStudentDoc = Omit<Student, 'evaluations'>;
+
+interface CollectionSnapshotMaps {
+  grupos: Map<string, string>;
+  alumnos: Map<string, string>;
+  pruebas: Map<string, string>;
+  evaluaciones: Map<string, string>;
+  rubricas: Map<string, string>;
+}
+
+function createEmptyMaps(): CollectionSnapshotMaps {
+  return {
+    grupos: new Map(),
+    alumnos: new Map(),
+    pruebas: new Map(),
+    evaluaciones: new Map(),
+    rubricas: new Map(),
+  };
+}
+
+let lastKnownDocs: CollectionSnapshotMaps = createEmptyMaps();
+let syncWriteQueue: Promise<unknown> = Promise.resolve();
+let activeLocalWriteCount = 0;
+let lastLocalSyncFailed = false;
+let pendingPostWriteCallback: (() => void) | null = null;
+
+/**
+ * Recursively strips `undefined` values AND any Base64 `data:image/...` strings
+ * so Cloud Firestore documents are guaranteed lightweight (< 20 KB) and can NEVER
+ * fail due to the 1 MB per-document limit.
+ */
+function stripUndefinedAndDataUrlsDeep<T>(value: T): T {
+  if (typeof value === 'string') {
+    if (value.startsWith('data:image/') || value.startsWith('data:application/')) {
+      return '' as unknown as T;
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    const cleanedArr = value
+      .map((item) => stripUndefinedAndDataUrlsDeep(item))
+      .filter((item) => item !== undefined && item !== '');
+    return cleanedArr as unknown as T;
+  }
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (v === undefined) continue;
+      if (FORBIDDEN_FIRESTORE_IMAGE_KEYS.has(k)) continue;
+      if (typeof v === 'string' && (v.startsWith('data:image/') || v.startsWith('data:application/'))) {
+        continue;
+      }
+      out[k] = stripUndefinedAndDataUrlsDeep(v);
+    }
+    return out as T;
+  }
+  return value;
+}
+
+function collectDriveUrls(assets?: StoredImageAsset[]): string[] {
+  if (!Array.isArray(assets)) return [];
+  const urls: string[] = [];
+  for (const asset of assets) {
+    if (asset?.driveUrl && typeof asset.driveUrl === 'string' && asset.driveUrl.startsWith('http')) {
+      urls.push(asset.driveUrl);
+    }
+  }
+  return urls;
+}
+
+/**
+ * Builds a lightweight Cloud Firestore representation of an EvaluationRecord:
+ * - Normalizes asignatura, language, type, modalidad, typology
+ * - Strips ALL Base64 images (which remain preserved in IndexedDB)
+ * - Keeps lightweight metadata (`hasLocalImage`, counts, and any Google Drive links)
+ */
+function sanitizeEvaluationForFirestore(record: EvaluationRecord, fallbackStudentId: string): EvaluationRecord {
+  const normalized = normalizeEvaluationRecord({
+    ...record,
+    studentId: record.studentId || fallbackStudentId,
+  });
+
+  const refCount = normalized.pruebaImagenes?.length || normalized.localReferenceImageCount || 0;
+  const stuCount = normalized.studentImages?.length || normalized.localStudentImageCount || 0;
+  const hasLocalImage = Boolean(normalized.hasLocalImage || refCount > 0 || stuCount > 0);
+  const driveUrls = Array.from(
+    new Set([
+      ...(normalized.driveImageUrls || []),
+      ...collectDriveUrls(normalized.pruebaImagenes),
+      ...collectDriveUrls(normalized.studentImages),
+    ])
+  );
+
+  const stripped = stripUndefinedAndDataUrlsDeep({
+    ...normalized,
+    pruebaImagenes: undefined,
+    studentImages: undefined,
+    hasLocalImage: hasLocalImage || undefined,
+    localReferenceImageCount: refCount > 0 ? refCount : undefined,
+    localStudentImageCount: stuCount > 0 ? stuCount : undefined,
+    driveImageUrls: driveUrls.length > 0 ? driveUrls : undefined,
+  });
+
+  return stripped;
+}
+
+function sanitizeSavedTestForFirestore(test: SavedTestDefinition): SavedTestDefinition {
+  const normalized = normalizeSavedTestDefinition(test);
+  const refCount = normalized.pruebaImagenes?.length || normalized.localReferenceImageCount || 0;
+  const hasLocalImage = Boolean(normalized.hasLocalImage || refCount > 0);
+  const driveUrls = Array.from(
+    new Set([
+      ...(normalized.driveImageUrls || []),
+      ...collectDriveUrls(normalized.pruebaImagenes),
+    ])
+  );
+
+  return stripUndefinedAndDataUrlsDeep({
+    ...normalized,
+    pruebaImagenes: undefined,
+    hasLocalImage: hasLocalImage || undefined,
+    localReferenceImageCount: refCount > 0 ? refCount : undefined,
+    driveImageUrls: driveUrls.length > 0 ? driveUrls : undefined,
+  });
+}
+
+function computeCanonicalMapsHash(maps: CollectionSnapshotMaps): string {
+  const sortEntries = (m: Map<string, string>) =>
+    Array.from(m.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+
+  return JSON.stringify([
+    sortEntries(maps.grupos),
+    sortEntries(maps.alumnos),
+    sortEntries(maps.pruebas),
+    sortEntries(maps.evaluaciones),
+    sortEntries(maps.rubricas),
+  ]);
+}
+
+function serializeWorkspaceToDocMaps(state: WorkspaceState): {
+  rawDocs: {
+    grupos: Map<string, ClassGroup>;
+    alumnos: Map<string, FirestoreStudentDoc>;
+    pruebas: Map<string, SavedTestDefinition>;
+    evaluaciones: Map<string, EvaluationRecord>;
+    rubricas: Map<string, Rubric>;
+  };
+  serialized: CollectionSnapshotMaps;
+} {
+  const rawDocs = {
+    grupos: new Map<string, ClassGroup>(),
+    alumnos: new Map<string, FirestoreStudentDoc>(),
+    pruebas: new Map<string, SavedTestDefinition>(),
+    evaluaciones: new Map<string, EvaluationRecord>(),
+    rubricas: new Map<string, Rubric>(),
+  };
+
+  const serialized = createEmptyMaps();
+
+  for (const grp of state.groups) {
+    const clean = stripUndefinedAndDataUrlsDeep(grp);
+    rawDocs.grupos.set(clean.id, clean);
+    serialized.grupos.set(clean.id, JSON.stringify(clean));
+  }
+
+  for (const st of state.students) {
+    const { evaluations, ...studentMeta } = st;
+    const cleanStudent = stripUndefinedAndDataUrlsDeep(studentMeta);
+    rawDocs.alumnos.set(cleanStudent.id, cleanStudent);
+    serialized.alumnos.set(cleanStudent.id, JSON.stringify(cleanStudent));
+
+    for (const ev of evaluations || []) {
+      const cleanEv = sanitizeEvaluationForFirestore(ev, st.id);
+      rawDocs.evaluaciones.set(cleanEv.id, cleanEv);
+      serialized.evaluaciones.set(cleanEv.id, JSON.stringify(cleanEv));
+    }
+  }
+
+  for (const test of state.savedTests || []) {
+    const cleanTest = sanitizeSavedTestForFirestore(test);
+    rawDocs.pruebas.set(cleanTest.id, cleanTest);
+    serialized.pruebas.set(cleanTest.id, JSON.stringify(cleanTest));
+  }
+
+  for (const rub of state.rubrics || []) {
+    const cleanRub = stripUndefinedAndDataUrlsDeep(rub);
+    rawDocs.rubricas.set(cleanRub.id, cleanRub);
+    serialized.rubricas.set(cleanRub.id, JSON.stringify(cleanRub));
+  }
+
+  return { rawDocs, serialized };
+}
+
 /**
  * Persists the teacher's Gemini API key (and model/language preference) into
  * Cloud Firestore `config/teacherSettings` using `{ merge: true }`.
@@ -51,7 +271,7 @@ function isValidCloudGeminiModel(val: unknown): val is GeminiModelId {
 export async function saveTeacherSettingsToFirestore(
   settings: Partial<CloudTeacherSettings>
 ): Promise<void> {
-  const payload = stripUndefinedDeep({
+  const payload = stripUndefinedAndDataUrlsDeep({
     ...settings,
     updatedAt: new Date().toISOString(),
   });
@@ -93,164 +313,21 @@ export function subscribeToTeacherSettings(
         return;
       }
 
-      // First-time seed: Firestore has no key yet, so upload existing localStorage / env key once
       const cleanLocal = localFallbackKey.trim();
       if (cleanLocal && !seededLocalKey) {
         seededLocalKey = true;
         setSyncedGeminiApiKey(cleanLocal);
         void saveTeacherSettingsToFirestore({ geminiApiKey: cleanLocal }).catch((err) => {
-          console.warn('[Firestore seed teacherSettings]', err);
+          console.error('[Firestore seed teacherSettings]', err);
+          onError?.(err instanceof Error ? err : new Error(String(err)));
         });
       }
     },
     (err) => {
-      console.warn('[Firestore teacherSettings onSnapshot]', err);
+      console.error('[Firestore teacherSettings onSnapshot]', err);
       onError?.(err);
     }
   );
-}
-
-const MAX_BATCH_OPS = 350;
-const SAFE_DOC_MAX_BYTES = 920_000; // Guard safely under Firestore's 1,048,576 byte (1 MB) limit
-
-type FirestoreStudentDoc = Omit<Student, 'evaluations'>;
-
-interface CollectionSnapshotMaps {
-  grupos: Map<string, string>;
-  alumnos: Map<string, string>;
-  pruebas: Map<string, string>;
-  evaluaciones: Map<string, string>;
-  rubricas: Map<string, string>;
-}
-
-function createEmptyMaps(): CollectionSnapshotMaps {
-  return {
-    grupos: new Map(),
-    alumnos: new Map(),
-    pruebas: new Map(),
-    evaluaciones: new Map(),
-    rubricas: new Map(),
-  };
-}
-
-let lastKnownDocs: CollectionSnapshotMaps = createEmptyMaps();
-let syncWriteQueue: Promise<unknown> = Promise.resolve();
-
-/**
- * Recursively strips `undefined` values because Firestore rejects `undefined` fields.
- */
-function stripUndefinedDeep<T>(value: T): T {
-  if (Array.isArray(value)) {
-    return value.map((item) => stripUndefinedDeep(item)) as unknown as T;
-  }
-  if (value !== null && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (v !== undefined) {
-        out[k] = stripUndefinedDeep(v);
-      }
-    }
-    return out as T;
-  }
-  return value;
-}
-
-function estimateUtf8Bytes(obj: unknown): number {
-  try {
-    return new Blob([JSON.stringify(obj)]).size;
-  } catch {
-    return JSON.stringify(obj).length * 2;
-  }
-}
-
-/**
- * Ensures an individual evaluation or test document never exceeds Firestore's 1 MB limit.
- * Normally each compressed 1200px JPEG 0.70 image is ~90-180 KB, so this only acts as
- * a safety net if a single evaluation somehow attaches 6+ very dense photos.
- */
-function enforceFirestoreDocSizeLimit<
-  T extends { pruebaImagenes?: StoredImageAsset[]; studentImages?: StoredImageAsset[] },
->(docData: T): T {
-  const cleaned = stripUndefinedDeep(docData);
-  if (estimateUtf8Bytes(cleaned) <= SAFE_DOC_MAX_BYTES) {
-    return cleaned;
-  }
-
-  // First trim excess reference copies if multiple, keeping at least the first photo
-  const copy = { ...cleaned };
-  if (Array.isArray(copy.pruebaImagenes) && copy.pruebaImagenes.length > 1) {
-    copy.pruebaImagenes = [copy.pruebaImagenes[0]];
-    if (estimateUtf8Bytes(copy) <= SAFE_DOC_MAX_BYTES) return copy;
-  }
-  if (Array.isArray(copy.studentImages) && copy.studentImages.length > 2) {
-    copy.studentImages = copy.studentImages.slice(0, 2);
-    if (estimateUtf8Bytes(copy) <= SAFE_DOC_MAX_BYTES) return copy;
-  }
-  if (Array.isArray(copy.pruebaImagenes) && copy.pruebaImagenes.length > 0) {
-    delete copy.pruebaImagenes;
-    if (estimateUtf8Bytes(copy) <= SAFE_DOC_MAX_BYTES) return copy;
-  }
-  if (Array.isArray(copy.studentImages) && copy.studentImages.length > 1) {
-    copy.studentImages = [copy.studentImages[0]];
-  }
-  return copy;
-}
-
-function serializeWorkspaceToDocMaps(state: WorkspaceState): {
-  rawDocs: {
-    grupos: Map<string, ClassGroup>;
-    alumnos: Map<string, FirestoreStudentDoc>;
-    pruebas: Map<string, SavedTestDefinition>;
-    evaluaciones: Map<string, EvaluationRecord>;
-    rubricas: Map<string, Rubric>;
-  };
-  serialized: CollectionSnapshotMaps;
-} {
-  const rawDocs = {
-    grupos: new Map<string, ClassGroup>(),
-    alumnos: new Map<string, FirestoreStudentDoc>(),
-    pruebas: new Map<string, SavedTestDefinition>(),
-    evaluaciones: new Map<string, EvaluationRecord>(),
-    rubricas: new Map<string, Rubric>(),
-  };
-
-  const serialized = createEmptyMaps();
-
-  for (const grp of state.groups) {
-    const clean = stripUndefinedDeep(grp);
-    rawDocs.grupos.set(clean.id, clean);
-    serialized.grupos.set(clean.id, JSON.stringify(clean));
-  }
-
-  for (const st of state.students) {
-    const { evaluations, ...studentMeta } = st;
-    const cleanStudent = stripUndefinedDeep(studentMeta);
-    rawDocs.alumnos.set(cleanStudent.id, cleanStudent);
-    serialized.alumnos.set(cleanStudent.id, JSON.stringify(cleanStudent));
-
-    for (const ev of evaluations || []) {
-      const cleanEv = enforceFirestoreDocSizeLimit({
-        ...ev,
-        studentId: ev.studentId || st.id,
-      });
-      rawDocs.evaluaciones.set(cleanEv.id, cleanEv);
-      serialized.evaluaciones.set(cleanEv.id, JSON.stringify(cleanEv));
-    }
-  }
-
-  for (const test of state.savedTests || []) {
-    const cleanTest = enforceFirestoreDocSizeLimit(test);
-    rawDocs.pruebas.set(cleanTest.id, cleanTest);
-    serialized.pruebas.set(cleanTest.id, JSON.stringify(cleanTest));
-  }
-
-  for (const rub of state.rubrics || []) {
-    const cleanRub = stripUndefinedDeep(rub);
-    rawDocs.rubricas.set(cleanRub.id, cleanRub);
-    serialized.rubricas.set(cleanRub.id, JSON.stringify(cleanRub));
-  }
-
-  return { rawDocs, serialized };
 }
 
 interface PendingBatchOp {
@@ -280,13 +357,16 @@ async function commitBatchedOps(ops: PendingBatchOp[]): Promise<void> {
 
 export function resetFirestoreSyncCache(): void {
   lastKnownDocs = createEmptyMaps();
+  activeLocalWriteCount = 0;
+  lastLocalSyncFailed = false;
+  pendingPostWriteCallback = null;
 }
 
 /**
  * First-login safe migration: checks if all 5 Firestore collections are completely empty.
  * If Firestore is empty and local IndexedDB / localStorage has data (groups, students,
- * saved tests, evaluations with images, rubrics), uploads 100% of them to Firestore
- * with each evaluation saved as an individual document in `evaluaciones`.
+ * saved tests, evaluations, rubrics), uploads 100% of them to Firestore WITHOUT Base64
+ * blobs (which remain safely in local IndexedDB).
  */
 export async function seedFirestoreIfEmpty(localState: WorkspaceState): Promise<{
   uploaded: boolean;
@@ -365,8 +445,14 @@ export async function seedFirestoreIfEmpty(localState: WorkspaceState): Promise<
     });
   }
 
-  await commitBatchedOps(ops);
-  lastKnownDocs = serialized;
+  activeLocalWriteCount += 1;
+  try {
+    await commitBatchedOps(ops);
+    lastKnownDocs = serialized;
+    lastLocalSyncFailed = false;
+  } finally {
+    activeLocalWriteCount = Math.max(0, activeLocalWriteCount - 1);
+  }
 
   const hasMeaningfulUserRecords =
     rawDocs.alumnos.size > 0 ||
@@ -388,55 +474,76 @@ export async function seedFirestoreIfEmpty(localState: WorkspaceState): Promise<
 
 /**
  * Computes a minimal diff against lastKnownDocs and persists ONLY changed/added/deleted
- * documents across `grupos`, `alumnos`, `pruebas`, `evaluaciones`, and `rubricas`.
+ * lightweight documents (NEVER Base64 images) across all 5 Firestore collections.
+ * Protects local state against intermediate `onSnapshot` race conditions while committing.
  */
 export function syncWorkspaceDiffToFirestore(state: WorkspaceState): Promise<void> {
+  // Increment synchronously BEFORE queueing so no pending onSnapshot debounce timer can overwrite React state
+  activeLocalWriteCount += 1;
+
   const run = async () => {
-    const { rawDocs, serialized } = serializeWorkspaceToDocMaps(state);
-    const ops: PendingBatchOp[] = [];
+    try {
+      const { rawDocs, serialized } = serializeWorkspaceToDocMaps(state);
+      const ops: PendingBatchOp[] = [];
 
-    const collections: Array<{
-      key: keyof CollectionSnapshotMaps;
-      name: string;
-      map: Map<string, unknown>;
-    }> = [
-      { key: 'grupos', name: FIRESTORE_COLLECTIONS.GROUPS, map: rawDocs.grupos },
-      { key: 'alumnos', name: FIRESTORE_COLLECTIONS.STUDENTS, map: rawDocs.alumnos },
-      { key: 'pruebas', name: FIRESTORE_COLLECTIONS.TESTS, map: rawDocs.pruebas },
-      { key: 'evaluaciones', name: FIRESTORE_COLLECTIONS.EVALUATIONS, map: rawDocs.evaluaciones },
-      { key: 'rubricas', name: FIRESTORE_COLLECTIONS.RUBRICS, map: rawDocs.rubricas },
-    ];
+      const collections: Array<{
+        key: keyof CollectionSnapshotMaps;
+        name: string;
+        map: Map<string, unknown>;
+      }> = [
+        { key: 'grupos', name: FIRESTORE_COLLECTIONS.GROUPS, map: rawDocs.grupos },
+        { key: 'alumnos', name: FIRESTORE_COLLECTIONS.STUDENTS, map: rawDocs.alumnos },
+        { key: 'pruebas', name: FIRESTORE_COLLECTIONS.TESTS, map: rawDocs.pruebas },
+        { key: 'evaluaciones', name: FIRESTORE_COLLECTIONS.EVALUATIONS, map: rawDocs.evaluaciones },
+        { key: 'rubricas', name: FIRESTORE_COLLECTIONS.RUBRICS, map: rawDocs.rubricas },
+      ];
 
-    for (const col of collections) {
-      const prevMap = lastKnownDocs[col.key];
-      const nextSerializedMap = serialized[col.key];
+      for (const col of collections) {
+        const prevMap = lastKnownDocs[col.key];
+        const nextSerializedMap = serialized[col.key];
 
-      for (const [id, nextJson] of nextSerializedMap.entries()) {
-        if (prevMap.get(id) !== nextJson) {
-          ops.push({
-            type: 'set',
-            collectionName: col.name,
-            id,
-            data: col.map.get(id) as Record<string, unknown>,
-          });
+        for (const [id, nextJson] of nextSerializedMap.entries()) {
+          if (prevMap.get(id) !== nextJson) {
+            ops.push({
+              type: 'set',
+              collectionName: col.name,
+              id,
+              data: col.map.get(id) as Record<string, unknown>,
+            });
+          }
+        }
+
+        for (const prevId of prevMap.keys()) {
+          if (!nextSerializedMap.has(prevId)) {
+            ops.push({
+              type: 'delete',
+              collectionName: col.name,
+              id: prevId,
+            });
+          }
         }
       }
 
-      for (const prevId of prevMap.keys()) {
-        if (!nextSerializedMap.has(prevId)) {
-          ops.push({
-            type: 'delete',
-            collectionName: col.name,
-            id: prevId,
-          });
-        }
+      if (ops.length === 0) {
+        lastLocalSyncFailed = false;
+        return;
+      }
+
+      await commitBatchedOps(ops);
+      lastKnownDocs = serialized;
+      lastLocalSyncFailed = false;
+    } catch (err) {
+      lastLocalSyncFailed = true;
+      console.error('[Firestore syncWorkspaceDiffToFirestore] Write failed:', err);
+      throw err instanceof Error ? err : new Error(String(err));
+    } finally {
+      activeLocalWriteCount = Math.max(0, activeLocalWriteCount - 1);
+      if (activeLocalWriteCount === 0 && pendingPostWriteCallback) {
+        const cb = pendingPostWriteCallback;
+        pendingPostWriteCallback = null;
+        cb();
       }
     }
-
-    if (ops.length === 0) return;
-
-    await commitBatchedOps(ops);
-    lastKnownDocs = serialized;
   };
 
   const next = syncWriteQueue.then(run, run);
@@ -447,7 +554,13 @@ export function syncWorkspaceDiffToFirestore(state: WorkspaceState): Promise<voi
 /**
  * Attaches real-time `onSnapshot` listeners to all 5 Firestore collections
  * (`grupos`, `alumnos`, `pruebas`, `evaluaciones`, `rubricas`).
- * Reconstructs the unified `WorkspaceState` whenever any device updates Firestore.
+ *
+ * Race-condition & data-loss protections:
+ * - Coalesces multi-collection emissions with a 200ms debounce so a batch writing
+ *   `alumnos` + `evaluaciones` NEVER emits a partial intermediate state missing the new evaluation.
+ * - Defers snapshot emission while a local `writeBatch` is in-flight (`activeLocalWriteCount > 0`).
+ * - Never overwrites local React state if the incoming snapshot matches our already-committed
+ *   `lastKnownDocs` hash (echo suppression), or if the last local write failed (`lastLocalSyncFailed`).
  */
 export function subscribeToFirestoreWorkspace(
   onUpdate: (state: WorkspaceState) => void,
@@ -467,9 +580,13 @@ export function subscribeToFirestoreWorkspace(
     rubricas: false,
   };
 
+  let initialEmissionDone = false;
   let lastEmittedHash = '';
+  let emitTimer: number | null = null;
+  let disposed = false;
 
-  const emitIfReady = () => {
+  const flushEmit = () => {
+    if (disposed) return;
     if (
       !ready.grupos ||
       !ready.alumnos ||
@@ -477,6 +594,17 @@ export function subscribeToFirestoreWorkspace(
       !ready.evaluaciones ||
       !ready.rubricas
     ) {
+      return;
+    }
+
+    // Never overwrite React state mid-write; wait until the active local batch finishes
+    if (activeLocalWriteCount > 0) {
+      pendingPostWriteCallback = scheduleEmit;
+      return;
+    }
+
+    // Never clobber unsaved local edits if the previous Firestore write failed
+    if (lastLocalSyncFailed && initialEmissionDone) {
       return;
     }
 
@@ -518,24 +646,35 @@ export function subscribeToFirestoreWorkspace(
 
     const { state: migrated } = migrateWorkspaceState(rawState);
     const { serialized } = serializeWorkspaceToDocMaps(migrated);
+    const incomingHash = computeCanonicalMapsHash(serialized);
+    const knownHash = computeCanonicalMapsHash(lastKnownDocs);
+
+    // If this snapshot is merely an echo of our own just-committed local write, skip React overwrite!
+    if (initialEmissionDone && (incomingHash === lastEmittedHash || incomingHash === knownHash)) {
+      lastKnownDocs = serialized;
+      lastEmittedHash = incomingHash;
+      return;
+    }
+
     lastKnownDocs = serialized;
-
-    // Avoid redundant React state updates if snapshot matches our exact known state
-    const hash = JSON.stringify([
-      Array.from(serialized.grupos.entries()),
-      Array.from(serialized.alumnos.entries()),
-      Array.from(serialized.pruebas.entries()),
-      Array.from(serialized.evaluaciones.entries()),
-      Array.from(serialized.rubricas.entries()),
-    ]);
-    if (hash === lastEmittedHash) return;
-    lastEmittedHash = hash;
-
+    lastEmittedHash = incomingHash;
+    initialEmissionDone = true;
     onUpdate(migrated);
   };
 
+  const scheduleEmit = () => {
+    if (disposed) return;
+    if (emitTimer !== null) {
+      window.clearTimeout(emitTimer);
+    }
+    emitTimer = window.setTimeout(() => {
+      emitTimer = null;
+      flushEmit();
+    }, 200);
+  };
+
   const handleErr = (err: Error) => {
-    console.warn('[Firestore onSnapshot]', err);
+    console.error('[Firestore onSnapshot]', err);
     onError?.(err);
   };
 
@@ -549,7 +688,7 @@ export function subscribeToFirestoreWorkspace(
           groupsMap.set(d.id, { ...data, id: data.id || d.id });
         });
         ready.grupos = true;
-        emitIfReady();
+        scheduleEmit();
       },
       handleErr
     ),
@@ -562,7 +701,7 @@ export function subscribeToFirestoreWorkspace(
           studentsMap.set(d.id, { ...data, id: data.id || d.id });
         });
         ready.alumnos = true;
-        emitIfReady();
+        scheduleEmit();
       },
       handleErr
     ),
@@ -575,7 +714,7 @@ export function subscribeToFirestoreWorkspace(
           testsMap.set(d.id, { ...data, id: data.id || d.id });
         });
         ready.pruebas = true;
-        emitIfReady();
+        scheduleEmit();
       },
       handleErr
     ),
@@ -588,7 +727,7 @@ export function subscribeToFirestoreWorkspace(
           evalsMap.set(d.id, { ...data, id: data.id || d.id });
         });
         ready.evaluaciones = true;
-        emitIfReady();
+        scheduleEmit();
       },
       handleErr
     ),
@@ -601,13 +740,19 @@ export function subscribeToFirestoreWorkspace(
           rubricsMap.set(d.id, { ...data, id: data.id || d.id });
         });
         ready.rubricas = true;
-        emitIfReady();
+        scheduleEmit();
       },
       handleErr
     ),
   ];
 
   return () => {
+    disposed = true;
+    if (emitTimer !== null) {
+      window.clearTimeout(emitTimer);
+      emitTimer = null;
+    }
+    pendingPostWriteCallback = null;
     unsubs.forEach((u) => u());
   };
 }
