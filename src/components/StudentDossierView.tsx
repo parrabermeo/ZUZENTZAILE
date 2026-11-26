@@ -24,6 +24,10 @@ import {
   ChevronDown,
   ChevronUp,
   Images,
+  Mail,
+  AlertTriangle,
+  CheckCircle2,
+  XCircle,
 } from 'lucide-react';
 import type {
   AiEvaluationDraft,
@@ -41,6 +45,7 @@ import { TEXT_TYPOLOGIES, getBaseRubric } from '../data/defaultRubrics';
 import { getScoreBadgeClasses, RUBRIC_LEVEL_BADGE_CLASSES } from '../utils/scoreStyles';
 import { getSubjectLabel, resolveEvaluationSubject } from '../utils/subjects';
 import { EvaluationEditorPanel } from './EvaluationEditorPanel';
+import { EmailReportButtons } from './EmailReportButtons';
 import { StudentEvolutionCharts } from './StudentEvolutionCharts';
 import { StudentEvolutionReportPanel } from './StudentEvolutionReportPanel';
 
@@ -288,6 +293,9 @@ export const StudentDossierView: React.FC<StudentDossierViewProps> = ({
         ? ev.linguisticCorrections.map((lc) => ({ ...lc }))
         : [],
       studentFeedback: ev.feedbackSummary || '',
+      ...(ev.pendingSubjectAssessment
+        ? { pendingSubjectAssessment: { ...ev.pendingSubjectAssessment } }
+        : {}),
     });
   };
 
@@ -318,6 +326,7 @@ export const StudentDossierView: React.FC<StudentDossierViewProps> = ({
         (c) => c.original.trim() || c.correction.trim()
       ),
       feedbackSummary: editingDraft.studentFeedback.trim(),
+      pendingSubjectAssessment: editingDraft.pendingSubjectAssessment,
     };
 
     onUpdateEvaluation(student.id, updated);
@@ -527,7 +536,55 @@ export const StudentDossierView: React.FC<StudentDossierViewProps> = ({
           </section>
         )}
 
-        {/* 5. Personalized Student Feedback */}
+        {/* 5. Pending Subject Assessment (LH4 / LH5) */}
+        {ev.pendingSubjectAssessment && (
+          <section
+            className={`rounded-xl border p-4 space-y-2 ${
+              ev.pendingSubjectAssessment.sufficient
+                ? 'border-emerald-300 bg-emerald-50/60'
+                : 'border-amber-300 bg-amber-50/70'
+            }`}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h4 className="flex items-center gap-2 text-xs font-extrabold text-slate-900">
+                <AlertTriangle
+                  className={`h-4 w-4 shrink-0 ${
+                    ev.pendingSubjectAssessment.sufficient ? 'text-emerald-600' : 'text-amber-600'
+                  }`}
+                />
+                <span>
+                  {t.dossier.pendingEvalCardTitle(
+                    getSubjectLabel(ev.pendingSubjectAssessment.subject, lang),
+                    ev.pendingSubjectAssessment.pendingCourse
+                  )}
+                </span>
+              </h4>
+              <span
+                className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-extrabold ${
+                  ev.pendingSubjectAssessment.sufficient
+                    ? 'bg-emerald-600 text-white'
+                    : 'bg-rose-600 text-white'
+                }`}
+              >
+                {ev.pendingSubjectAssessment.sufficient ? (
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                ) : (
+                  <XCircle className="h-3.5 w-3.5" />
+                )}
+                {ev.pendingSubjectAssessment.sufficient
+                  ? t.dossier.pendingEvalSufficient
+                  : t.dossier.pendingEvalInsufficient}
+              </span>
+            </div>
+            {ev.pendingSubjectAssessment.justification && (
+              <p className="text-xs leading-relaxed text-slate-800">
+                {ev.pendingSubjectAssessment.justification}
+              </p>
+            )}
+          </section>
+        )}
+
+        {/* 6. Personalized Student Feedback */}
         {ev.feedbackSummary && (
           <section className="rounded-xl border border-teal-200/80 bg-teal-50/50 p-4 space-y-1.5">
             <h4 className="flex items-center gap-2 text-xs font-extrabold text-teal-900">
@@ -688,39 +745,56 @@ export const StudentDossierView: React.FC<StudentDossierViewProps> = ({
         {/* Expandable Full Evaluation Report */}
         {isExpanded && (
           <div className="panel-slide-down">
-            {/* Action Toolbar inside Expanded Report (Edit Title/Date, Full Edit, Delete) */}
-            <div className="no-print flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50/60 px-5 py-2.5">
-              <div className="flex flex-wrap items-center gap-2">
+            {/* Action Toolbar inside Expanded Report (Email Report, Edit Title/Date, Full Edit, Delete) */}
+            <div className="no-print space-y-2.5 border-b border-slate-100 bg-slate-50/60 px-4 sm:px-5 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQuickEditId(ev.id);
+                      setQuickEditTitle(ev.title);
+                      setQuickEditDate(ev.date);
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-800 transition"
+                  >
+                    <Calendar className="h-3.5 w-3.5 text-emerald-600" />
+                    {t.dossier.quickEditMetaBtn}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleStartEditEval(ev)}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-800 transition"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                    {t.dossier.editEvaluation}
+                  </button>
+                </div>
+
                 <button
                   type="button"
-                  onClick={() => {
-                    setQuickEditId(ev.id);
-                    setQuickEditTitle(ev.title);
-                    setQuickEditDate(ev.date);
-                  }}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-800 transition"
+                  onClick={() => handleConfirmDeleteEval(ev)}
+                  className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-[11px] font-bold text-rose-700 hover:bg-rose-100 transition"
                 >
-                  <Calendar className="h-3.5 w-3.5 text-emerald-600" />
-                  {t.dossier.quickEditMetaBtn}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleStartEditEval(ev)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-800 transition"
-                >
-                  <Pencil className="h-3.5 w-3.5" />
-                  {t.dossier.editEvaluation}
+                  <Trash2 className="h-3.5 w-3.5" />
+                  {t.dossier.deleteEvaluation}
                 </button>
               </div>
 
-              <button
-                type="button"
-                onClick={() => handleConfirmDeleteEval(ev)}
-                className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-[11px] font-bold text-rose-700 hover:bg-rose-100 transition"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-                {t.dossier.deleteEvaluation}
-              </button>
+              <EmailReportButtons
+                studentName={student.fullName}
+                studentEmail={student.email}
+                asignatura={resolveEvaluationSubject(ev)}
+                testTitle={ev.title}
+                language={ev.language}
+                strengths={ev.strengths || []}
+                improvements={ev.improvements || []}
+                linguisticCorrections={ev.linguisticCorrections || []}
+                feedbackSummary={ev.feedbackSummary || ''}
+                onEditStudentEmail={() => onEditStudent(student)}
+                t={t}
+                compact
+              />
             </div>
 
             {/* Card Detailed Body: 2-column split viewer when reference test or student photos exist */}
@@ -950,9 +1024,30 @@ export const StudentDossierView: React.FC<StudentDossierViewProps> = ({
                   </span>
                 )}
               </div>
-              <h2 className="text-2xl font-extrabold tracking-tight text-slate-900 break-words">
-                {student.fullName}
-              </h2>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-2xl font-extrabold tracking-tight text-slate-900 break-words">
+                  {student.fullName}
+                </h2>
+                {student.pendingSubjects?.euskera && (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2.5 py-0.5 text-[11px] font-bold text-amber-800">
+                    <AlertTriangle className="h-3 w-3 text-amber-600 shrink-0" />
+                    {t.studentForm.pendingBadgeEu(student.pendingSubjects.euskera)}
+                  </span>
+                )}
+                {student.pendingSubjects?.lengua && (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2.5 py-0.5 text-[11px] font-bold text-amber-800">
+                    <AlertTriangle className="h-3 w-3 text-amber-600 shrink-0" />
+                    {t.studentForm.pendingBadgeEs(student.pendingSubjects.lengua)}
+                  </span>
+                )}
+              </div>
+
+              {student.email && (
+                <p className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500">
+                  <Mail className="h-3.5 w-3.5 text-indigo-500 shrink-0" />
+                  <span className="truncate">{student.email}</span>
+                </p>
+              )}
 
               {/* Pedagogical Tags */}
               {student.tags.length > 0 && (

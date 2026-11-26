@@ -13,6 +13,7 @@ import type {
 } from '../types';
 import { DEFAULT_GEMINI_MODEL } from './geminiService';
 import { createDefaultGroups } from '../data/sampleData';
+import { findMatchingStudentEmail } from '../data/studentEmailDirectory';
 import { languageToSubject, skillToModalityEs } from '../utils/subjects';
 import { extractReferenceImagesFromRecord } from '../utils/referenceImages';
 import {
@@ -221,7 +222,24 @@ export function migrateWorkspaceState(state: WorkspaceState): {
       return updated;
     });
 
-    return studentChanged ? { ...student, evaluations: nextEvals } : student;
+    // Auto-link student email from the initial Excel roster directory if missing (non-destructive)
+    let resolvedEmail = student.email?.trim() || undefined;
+    if (!resolvedEmail) {
+      const matchedEmail = findMatchingStudentEmail(student.fullName);
+      if (matchedEmail) {
+        resolvedEmail = matchedEmail;
+        migrated = true;
+        studentChanged = true;
+      }
+    }
+
+    return studentChanged
+      ? {
+          ...student,
+          ...(resolvedEmail ? { email: resolvedEmail } : {}),
+          evaluations: nextEvals,
+        }
+      : student;
   });
 
   const migratedRubrics: Rubric[] = state.rubrics.map((r) => {
@@ -642,6 +660,8 @@ export function parseAndValidateBackupJson(rawText: string): BackupPayload | nul
         id: s.id,
         code: typeof s.code === 'string' ? s.code : 'LH6-000',
         fullName: s.fullName,
+        ...(typeof s.email === 'string' && s.email.trim() ? { email: s.email.trim() } : {}),
+        ...(s.pendingSubjects ? { pendingSubjects: s.pendingSubjects } : {}),
         groupId: typeof s.groupId === 'string' ? s.groupId : validGroups[0]?.id || 'group-6a',
         tags: Array.isArray(s.tags) ? s.tags.filter((t) => typeof t === 'string') : [],
         notes: typeof s.notes === 'string' ? s.notes : '',

@@ -167,6 +167,12 @@ function mergeContinuationIntoPrevious(
       improvements: mergedImprovements,
       linguisticCorrections: mergedCorrections,
       studentFeedback: mergedFeedback,
+      ...(cont.draft.pendingSubjectAssessment || prev.draft.pendingSubjectAssessment
+        ? {
+            pendingSubjectAssessment:
+              cont.draft.pendingSubjectAssessment || prev.draft.pendingSubjectAssessment,
+          }
+        : {}),
     },
   };
 }
@@ -590,6 +596,9 @@ export const AddLateSubmissionModal: React.FC<AddLateSubmissionModalProps> = ({
           (c) => c.original.trim() || c.correction.trim()
         ),
         feedbackSummary: item.draft.studentFeedback.trim(),
+        ...(item.draft.pendingSubjectAssessment
+          ? { pendingSubjectAssessment: item.draft.pendingSubjectAssessment }
+          : {}),
         modelUsed: settings.geminiModel,
         reasoningLevel: 'low',
         createdAt: now,
@@ -663,6 +672,11 @@ export const AddLateSubmissionModal: React.FC<AddLateSubmissionModalProps> = ({
 
     setEvaluating(true);
     try {
+      const pendingCourse =
+        session.asignatura === 'euskera'
+          ? selectedStudent.pendingSubjects?.euskera ?? null
+          : selectedStudent.pendingSubjects?.lengua ?? null;
+
       const result = await evaluateStudentWorkWithAI({
         userApiKey: settings.geminiApiKey,
         model: settings.geminiModel,
@@ -676,6 +690,7 @@ export const AddLateSubmissionModal: React.FC<AddLateSubmissionModalProps> = ({
         rubric: activeRubric,
         studentName: selectedStudent.fullName,
         studentTags: selectedStudent.tags,
+        pendingCourse,
         studentText: studentText.trim(),
         images: inputMode === 'image' ? photos : undefined,
       });
@@ -733,6 +748,9 @@ export const AddLateSubmissionModal: React.FC<AddLateSubmissionModalProps> = ({
         (c) => c.original.trim() || c.correction.trim()
       ),
       feedbackSummary: draft.studentFeedback.trim(),
+      ...(draft.pendingSubjectAssessment
+        ? { pendingSubjectAssessment: draft.pendingSubjectAssessment }
+        : {}),
       modelUsed: settings.geminiModel,
       reasoningLevel: 'medium',
       createdAt: new Date().toISOString(),
@@ -896,6 +914,7 @@ export const AddLateSubmissionModal: React.FC<AddLateSubmissionModalProps> = ({
               onOpenSettings={onOpenSettings}
               highlightUpload={batchPhotos.length === 0}
               highlightEvaluate={batchPhotos.length > 0 && !batchProcessing && batchItems.length === 0}
+              testTitle={session.title}
               t={t}
             />
           ) : (
@@ -1104,6 +1123,10 @@ export const AddLateSubmissionModal: React.FC<AddLateSubmissionModalProps> = ({
                     draft={draft}
                     rubric={activeRubric}
                     studentName={selectedStudent.fullName}
+                    studentEmail={selectedStudent.email}
+                    asignatura={session.asignatura}
+                    testTitle={session.title}
+                    evalLanguage={evalLang}
                     modelUsed={settings.geminiModel}
                     reasoningLevel="medium"
                     hasNextPending={false}

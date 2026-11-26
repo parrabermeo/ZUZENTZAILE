@@ -78,6 +78,7 @@ interface BatchPhotosReviewPanelProps {
   onOpenSettings: () => void;
   highlightUpload?: boolean;
   highlightEvaluate?: boolean;
+  testTitle?: string;
   t: Translations;
 }
 
@@ -111,6 +112,7 @@ export const BatchPhotosReviewPanel: React.FC<BatchPhotosReviewPanelProps> = ({
   onOpenSettings,
   highlightUpload = false,
   highlightEvaluate = false,
+  testTitle,
   t,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -815,9 +817,13 @@ export const BatchPhotosReviewPanel: React.FC<BatchPhotosReviewPanelProps> = ({
                         rubric={activeRubric}
                         studentName={
                           matchedStudent
-                            ? `${matchedStudent.fullName} · ${t.evaluate.batchPhotos.photoBadge(item.pages)}`
-                            : `${item.detectedName || t.evaluate.batchPhotos.unmatchedOption} · ${t.evaluate.batchPhotos.photoBadge(item.pages)}`
+                            ? matchedStudent.fullName
+                            : item.detectedName || t.evaluate.batchPhotos.unmatchedOption
                         }
+                        studentEmail={matchedStudent?.email}
+                        asignatura={activeRubric.asignatura}
+                        testTitle={testTitle || activeRubric.title}
+                        evalLanguage={activeRubric.language}
                         modelUsed={(item.actualModelUsed as GeminiModelId) || activeModelId}
                         reasoningLevel="low"
                         hasNextPending={false}

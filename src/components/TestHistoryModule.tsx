@@ -23,11 +23,15 @@ import {
   ImagePlus,
   Camera,
   Loader2,
+  BookOpen,
+  PenTool,
+  GraduationCap,
 } from 'lucide-react';
 import type {
   AppSettings,
   ClassGroup,
   EvaluationRecord,
+  GroupColor,
   Language,
   Rubric,
   SavedTestDefinition,
@@ -230,6 +234,15 @@ interface TestHistoryModuleProps {
   onNotify: (message: string, type?: 'success' | 'info' | 'warning' | 'error') => void;
 }
 
+const GROUP_DOT_CLASSES: Record<GroupColor, string> = {
+  teal: 'bg-teal-500',
+  indigo: 'bg-indigo-500',
+  emerald: 'bg-emerald-500',
+  amber: 'bg-amber-500',
+  sky: 'bg-sky-500',
+  rose: 'bg-rose-500',
+};
+
 export const TestHistoryModule: React.FC<TestHistoryModuleProps> = ({
   groups,
   students,
@@ -257,6 +270,9 @@ export const TestHistoryModule: React.FC<TestHistoryModuleProps> = ({
   const [subjectFilter, setSubjectFilter] = useState<'all' | SubjectId>('all');
   const [modalityFilter, setModalityFilter] = useState<'all' | SkillMode>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  // 3-Level Hierarchical Accordion States (ALL collapsed initially by default)
+  const [expandedClassIds, setExpandedClassIds] = useState<Record<string, boolean>>({});
+  const [expandedModalityKeys, setExpandedModalityKeys] = useState<Record<string, boolean>>({});
   const [expandedSessions, setExpandedSessions] = useState<Record<string, boolean>>({});
   const [editingSessionKey, setEditingSessionKey] = useState<string | null>(null);
   const [editTitleValue, setEditTitleValue] = useState<string>('');
@@ -386,12 +402,67 @@ export const TestHistoryModule: React.FC<TestHistoryModuleProps> = ({
     return count > 0 ? Number((sum / count).toFixed(1)) : null;
   }, [allSessions]);
 
+  const toggleClassExpanded = (groupId: string) => {
+    setExpandedClassIds((prev) => ({
+      ...prev,
+      [groupId]: !prev[groupId],
+    }));
+  };
+
+  const toggleModalityExpanded = (groupId: string, skill: SkillMode) => {
+    const key = `${groupId}::${skill}`;
+    setExpandedModalityKeys((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  };
+
   const toggleSession = (key: string) => {
     setExpandedSessions((prev) => ({
       ...prev,
       [key]: !prev[key],
     }));
   };
+
+  const hasActiveHistoryFilter =
+    searchQuery.trim().length > 0 ||
+    groupFilter !== 'all' ||
+    subjectFilter !== 'all' ||
+    modalityFilter !== 'all';
+
+  // Organize filtered test sessions by Class -> Modality (reading / writing)
+  const classBuckets = useMemo(() => {
+    const buckets: Array<{
+      group: ClassGroup;
+      reading: GroupedTestSession[];
+      writing: GroupedTestSession[];
+      total: number;
+    }> = [];
+
+    const byGroup = new Map<string, GroupedTestSession[]>();
+    for (const s of filteredSessions) {
+      const list = byGroup.get(s.groupId) || [];
+      list.push(s);
+      byGroup.set(s.groupId, list);
+    }
+
+    for (const grp of groups) {
+      if (groupFilter !== 'all' && grp.id !== groupFilter) continue;
+      const list = byGroup.get(grp.id) || [];
+      if (hasActiveHistoryFilter && list.length === 0) continue;
+
+      const reading = list.filter((s) => s.type === 'reading');
+      const writing = list.filter((s) => s.type === 'writing');
+      buckets.push({
+        group: grp,
+        reading,
+        writing,
+        total: list.length,
+      });
+    }
+
+    return buckets;
+  }, [groups, filteredSessions, groupFilter, hasActiveHistoryFilter]);
 
   const handleStartEditSession = (session: GroupedTestSession) => {
     setEditingSessionKey(session.key);
@@ -598,319 +669,468 @@ export const TestHistoryModule: React.FC<TestHistoryModuleProps> = ({
           </button>
         </div>
       ) : (
-        <div className="space-y-3.5">
-          {filteredSessions.map((session) => {
-            const isExpanded = Boolean(expandedSessions[session.key]);
-            const typologyMeta = session.typology
-              ? TEXT_TYPOLOGIES.find((item) => item.id === session.typology)
-              : undefined;
+        /* 3-Level Hierarchical Accordion: Level 1 (Classes) -> Level 2 (Irakurmena / Idazmena) -> Level 3 (Tests) */
+        <div className="space-y-3">
+          {!hasActiveHistoryFilter && (
+            <p className="text-xs font-medium text-slate-500 px-1">{t.history.hierarchyHint}</p>
+          )}
 
-            return (
-              <div
-                key={session.key}
-                className="rounded-2xl border border-slate-200/90 bg-white shadow-2xs overflow-hidden"
-              >
-                {/* Test Session Row / Card Header */}
-                <div className="flex flex-col gap-4 p-4 sm:p-5 lg:flex-row lg:items-center lg:justify-between">
-                  <div className="flex items-start gap-4 min-w-0 flex-1">
-                    {/* Prominent Expandable Reference Prompt Thumbnail(s) OR Clean Attach-Photo Placeholder */}
-                    {session.pruebaImagenes && session.pruebaImagenes.length > 0 ? (
-                      <div className="flex flex-col items-center gap-1 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setLightbox({
-                              images: session.pruebaImagenes!,
-                              index: 0,
-                              title: session.title,
-                              zoom: 1,
-                            })
-                          }
-                          className="group relative h-16 w-16 sm:h-[72px] sm:w-[72px] overflow-hidden rounded-xl border-2 border-indigo-200 bg-slate-100 shadow-2xs hover:border-indigo-500 transition"
-                          title={t.dossier.zoomHint}
-                        >
-                          <img
-                            src={session.pruebaImagenes[0].dataUrl}
-                            alt={session.title}
-                            className="h-full w-full object-cover transition group-hover:scale-110"
-                          />
-                          {session.pruebaImagenes.length > 1 && (
-                            <span className="absolute bottom-1 right-1 rounded-md bg-slate-900/85 px-1.5 py-0.5 font-mono text-[9px] font-extrabold text-white shadow-xs">
-                              1/{session.pruebaImagenes.length}
+          {classBuckets.map(({ group, reading, writing, total }) => {
+            const isClassExpanded = hasActiveHistoryFilter
+              ? true
+              : Boolean(expandedClassIds[group.id]);
+
+            const modalities: Array<{
+              skill: SkillMode;
+              title: string;
+              sessions: GroupedTestSession[];
+              icon: React.ComponentType<{ className?: string }>;
+              accentActive: string;
+              badgeClasses: string;
+              iconClasses: string;
+            }> = [
+              {
+                skill: 'reading',
+                title: t.rubrics.readingCardTitle,
+                sessions: reading,
+                icon: BookOpen,
+                accentActive: 'border-indigo-300 bg-indigo-50/60',
+                badgeClasses: 'bg-indigo-100 text-indigo-800 border-indigo-200',
+                iconClasses: 'bg-indigo-100 text-indigo-700',
+              },
+              {
+                skill: 'writing',
+                title: t.rubrics.writingCardTitle,
+                sessions: writing,
+                icon: PenTool,
+                accentActive: 'border-emerald-300 bg-emerald-50/60',
+                badgeClasses: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+                iconClasses: 'bg-emerald-100 text-emerald-700',
+              },
+            ];
+
+            const renderSessionCard = (session: GroupedTestSession) => {
+              const isExpanded = Boolean(expandedSessions[session.key]);
+              const typologyMeta = session.typology
+                ? TEXT_TYPOLOGIES.find((item) => item.id === session.typology)
+                : undefined;
+
+              return (
+                <div
+                  key={session.key}
+                  className="rounded-2xl border border-slate-200/90 bg-white shadow-2xs overflow-hidden"
+                >
+                  {/* Test Session Row / Card Header */}
+                  <div className="flex flex-col gap-4 p-4 sm:p-5 lg:flex-row lg:items-center lg:justify-between">
+                    <div className="flex items-start gap-4 min-w-0 flex-1">
+                      {/* Prominent Expandable Reference Prompt Thumbnail(s) OR Clean Attach-Photo Placeholder */}
+                      {session.pruebaImagenes && session.pruebaImagenes.length > 0 ? (
+                        <div className="flex flex-col items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setLightbox({
+                                images: session.pruebaImagenes!,
+                                index: 0,
+                                title: session.title,
+                                zoom: 1,
+                              })
+                            }
+                            className="group relative h-16 w-16 sm:h-[72px] sm:w-[72px] overflow-hidden rounded-xl border-2 border-indigo-200 bg-slate-100 shadow-2xs hover:border-indigo-500 transition"
+                            title={t.dossier.zoomHint}
+                          >
+                            <img
+                              src={session.pruebaImagenes[0].dataUrl}
+                              alt={session.title}
+                              className="h-full w-full object-cover transition group-hover:scale-110"
+                            />
+                            {session.pruebaImagenes.length > 1 && (
+                              <span className="absolute bottom-1 right-1 rounded-md bg-slate-900/85 px-1.5 py-0.5 font-mono text-[9px] font-extrabold text-white shadow-xs">
+                                1/{session.pruebaImagenes.length}
+                              </span>
+                            )}
+                            <span className="absolute inset-0 flex items-center justify-center bg-slate-900/0 group-hover:bg-slate-900/35 transition">
+                              <ZoomIn className="h-4 w-4 text-white opacity-0 group-hover:opacity-100 transition" />
                             </span>
-                          )}
-                          <span className="absolute inset-0 flex items-center justify-center bg-slate-900/0 group-hover:bg-slate-900/35 transition">
-                            <ZoomIn className="h-4 w-4 text-white opacity-0 group-hover:opacity-100 transition" />
-                          </span>
-                        </button>
-                        <div className="flex items-center gap-2">
+                          </button>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              disabled={uploadingSessionKey === session.key}
+                              onClick={() => handleTriggerPromptUpload(session)}
+                              className="inline-flex items-center gap-0.5 text-[10px] font-bold text-indigo-700 hover:underline disabled:opacity-50"
+                            >
+                              {uploadingSessionKey === session.key ? (
+                                <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                              ) : (
+                                <ImagePlus className="h-2.5 w-2.5" />
+                              )}
+                              <span>
+                                {uploadingSessionKey === session.key
+                                  ? t.history.uploadingPromptPhoto
+                                  : t.history.updatePromptPhotoBtn}
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              disabled={uploadingSessionKey === session.key}
+                              onClick={() => handleTriggerPromptCamera(session)}
+                              title={t.evaluate.takePhotoBtn}
+                              className="inline-flex items-center text-[10px] font-bold text-emerald-700 hover:text-emerald-900 disabled:opacity-50"
+                            >
+                              <Camera className="h-3 w-3" />
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col gap-1 shrink-0">
                           <button
                             type="button"
                             disabled={uploadingSessionKey === session.key}
                             onClick={() => handleTriggerPromptUpload(session)}
-                            className="inline-flex items-center gap-0.5 text-[10px] font-bold text-indigo-700 hover:underline disabled:opacity-50"
+                            title={t.history.addPromptPhotoBtn}
+                            className="group flex h-[62px] w-[112px] sm:w-[132px] flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-amber-300 bg-amber-50/50 px-2 text-center text-amber-800 hover:border-amber-500 hover:bg-amber-50 transition disabled:opacity-50"
                           >
                             {uploadingSessionKey === session.key ? (
-                              <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                              <Loader2 className="h-4 w-4 animate-spin text-amber-600" />
                             ) : (
-                              <ImagePlus className="h-2.5 w-2.5" />
+                              <ImagePlus className="h-4 w-4 text-amber-600 group-hover:scale-110 transition" />
                             )}
-                            <span>
+                            <span className="text-[10px] font-bold leading-tight">
                               {uploadingSessionKey === session.key
                                 ? t.history.uploadingPromptPhoto
-                                : t.history.updatePromptPhotoBtn}
+                                : t.history.addPromptPhotoBtn}
                             </span>
                           </button>
                           <button
                             type="button"
                             disabled={uploadingSessionKey === session.key}
                             onClick={() => handleTriggerPromptCamera(session)}
-                            title={t.evaluate.takePhotoBtn}
-                            className="inline-flex items-center text-[10px] font-bold text-emerald-700 hover:text-emerald-900 disabled:opacity-50"
+                            className="inline-flex items-center justify-center gap-1 rounded-lg bg-emerald-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-emerald-700 transition disabled:opacity-50"
                           >
                             <Camera className="h-3 w-3" />
+                            <span>{t.evaluate.takePhotoBtn}</span>
                           </button>
                         </div>
-                      </div>
-                    ) : (
-                      <div className="flex flex-col gap-1 shrink-0">
-                        <button
-                          type="button"
-                          disabled={uploadingSessionKey === session.key}
-                          onClick={() => handleTriggerPromptUpload(session)}
-                          title={t.history.addPromptPhotoBtn}
-                          className="group flex h-[62px] w-[112px] sm:w-[132px] flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-amber-300 bg-amber-50/50 px-2 text-center text-amber-800 hover:border-amber-500 hover:bg-amber-50 transition disabled:opacity-50"
-                        >
-                          {uploadingSessionKey === session.key ? (
-                            <Loader2 className="h-4 w-4 animate-spin text-amber-600" />
-                          ) : (
-                            <ImagePlus className="h-4 w-4 text-amber-600 group-hover:scale-110 transition" />
-                          )}
-                          <span className="text-[10px] font-bold leading-tight">
-                            {uploadingSessionKey === session.key
-                              ? t.history.uploadingPromptPhoto
-                              : t.history.addPromptPhotoBtn}
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          disabled={uploadingSessionKey === session.key}
-                          onClick={() => handleTriggerPromptCamera(session)}
-                          className="inline-flex items-center justify-center gap-1 rounded-lg bg-emerald-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-emerald-700 transition disabled:opacity-50"
-                        >
-                          <Camera className="h-3 w-3" />
-                          <span>{t.evaluate.takePhotoBtn}</span>
-                        </button>
-                      </div>
-                    )}
-
-                    {/* Test Metadata (or Inline Cascade Edit Form for Title + Date) */}
-                    <div className="min-w-0 flex-1 space-y-1.5">
-                      {editingSessionKey === session.key ? (
-                        <div className="flex flex-wrap items-center gap-2 py-1">
-                          <input
-                            type="text"
-                            value={editTitleValue}
-                            onChange={(e) => setEditTitleValue(e.target.value)}
-                            className="flex-1 min-w-[200px] rounded-xl border border-teal-400 bg-white px-3 py-1.5 text-sm font-bold text-slate-900 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-500/20"
-                          />
-                          <input
-                            type="date"
-                            value={editDateValue}
-                            onChange={(e) => setEditDateValue(e.target.value)}
-                            className="rounded-xl border border-teal-400 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800 focus:border-teal-600 focus:outline-none"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => handleSaveEditSession(session)}
-                            disabled={!editTitleValue.trim() || !editDateValue.trim()}
-                            className="inline-flex items-center gap-1 rounded-xl bg-teal-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50"
-                          >
-                            <Check className="h-3.5 w-3.5" />
-                            {t.history.saveTestEditBtn}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setEditingSessionKey(null)}
-                            className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
-                          >
-                            <X className="h-3.5 w-3.5" />
-                            {t.history.cancelTestEditBtn}
-                          </button>
-                        </div>
-                      ) : (
-                        <>
-                          <div className="flex flex-wrap items-center gap-2 text-xs">
-                            <span
-                              className={`rounded-full border px-2.5 py-0.5 text-[11px] font-extrabold ${getSubjectBadgeClasses(
-                                session.asignatura
-                              )}`}
-                            >
-                              {getSubjectLabel(session.asignatura, lang)}
-                            </span>
-                            <span className="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-2 py-0.5 font-semibold text-slate-700">
-                              <Calendar className="h-3 w-3 text-teal-600" />
-                              {session.date}
-                            </span>
-                            <span className="rounded-full bg-slate-900 px-2.5 py-0.5 text-[11px] font-bold text-white">
-                              {session.groupName}
-                            </span>
-                            <span
-                              className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
-                                session.type === 'reading'
-                                  ? 'bg-indigo-50 text-indigo-800 border border-indigo-200/70'
-                                  : 'bg-teal-50 text-teal-800 border border-teal-200/70'
-                              }`}
-                            >
-                              {session.type === 'reading'
-                                ? t.rubrics.readingCardTitle
-                                : `${t.rubrics.writingCardTitle}${
-                                    typologyMeta ? ` · ${typologyMeta.title[lang]}` : ''
-                                  }`}
-                            </span>
-                            <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-bold text-slate-600">
-                              {session.language.toUpperCase()}
-                            </span>
-                          </div>
-
-                          <h3 className="text-base font-extrabold text-slate-900 truncate">
-                            {session.title}
-                          </h3>
-                        </>
                       )}
 
-                      <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
-                        <span className="inline-flex items-center gap-1.5 font-semibold text-slate-700">
-                          <Users className="h-3.5 w-3.5 text-slate-400" />
-                          {t.history.evaluatedRatio(
-                            session.entries.length,
-                            session.totalStudentsInGroup
-                          )}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Right side: Group Average (or 0-evaluated ready badge) + Add Work & Evaluate + Edit + Expand + Delete */}
-                  <div className="flex flex-wrap items-center justify-between lg:justify-end gap-2 shrink-0">
-                    {session.entries.length === 0 ? (
-                      <span className="inline-flex items-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] font-extrabold text-amber-800">
-                        <Sparkles className="h-3.5 w-3.5 text-amber-600" />
-                        {t.history.zeroEvaluatedBadge}
-                      </span>
-                    ) : (
-                      <div
-                        className={`rounded-xl border px-3 py-1.5 text-center ${getScoreBadgeClasses(
-                          session.averageScore
-                        )}`}
-                      >
-                        <p className="text-[9px] font-bold uppercase tracking-wider opacity-75">
-                          {t.history.groupAvgLabel}
-                        </p>
-                        <p className="text-sm font-extrabold">
-                          {session.averageScore.toFixed(1)} / 10
-                        </p>
-                      </div>
-                    )}
-
-                    {/* Prominent Add Exercises & Evaluate Button (Batch .jpg or Individual) */}
-                    <button
-                      type="button"
-                      onClick={() => setLateSubmissionSessionKey(session.key)}
-                      className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-bold text-white shadow-xs hover:bg-indigo-700 transition"
-                    >
-                      <UserPlus className="h-3.5 w-3.5" />
-                      <span>{t.history.addLateStudentBtn}</span>
-                    </button>
-
-                    {editingSessionKey !== session.key && (
-                      <button
-                        type="button"
-                        onClick={() => handleStartEditSession(session)}
-                        className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:border-amber-300 hover:bg-amber-50 hover:text-amber-800 transition"
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                        <span>{t.history.editTestBtn}</span>
-                      </button>
-                    )}
-
-                    {session.entries.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => toggleSession(session.key)}
-                        className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
-                      >
-                        <span>
-                          {isExpanded ? t.history.hideStudentsBtn : t.history.viewStudentsBtn}
-                        </span>
-                        {isExpanded ? (
-                          <ChevronUp className="h-4 w-4 text-slate-400" />
+                      {/* Test Metadata (or Inline Cascade Edit Form for Title + Date) */}
+                      <div className="min-w-0 flex-1 space-y-1.5">
+                        {editingSessionKey === session.key ? (
+                          <div className="flex flex-wrap items-center gap-2 py-1">
+                            <input
+                              type="text"
+                              value={editTitleValue}
+                              onChange={(e) => setEditTitleValue(e.target.value)}
+                              className="flex-1 min-w-[200px] rounded-xl border border-teal-400 bg-white px-3 py-1.5 text-sm font-bold text-slate-900 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-500/20"
+                            />
+                            <input
+                              type="date"
+                              value={editDateValue}
+                              onChange={(e) => setEditDateValue(e.target.value)}
+                              className="rounded-xl border border-teal-400 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800 focus:border-teal-600 focus:outline-none"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleSaveEditSession(session)}
+                              disabled={!editTitleValue.trim() || !editDateValue.trim()}
+                              className="inline-flex items-center gap-1 rounded-xl bg-teal-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-50"
+                            >
+                              <Check className="h-3.5 w-3.5" />
+                              {t.history.saveTestEditBtn}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditingSessionKey(null)}
+                              className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                              {t.history.cancelTestEditBtn}
+                            </button>
+                          </div>
                         ) : (
-                          <ChevronDown className="h-4 w-4 text-slate-400" />
+                          <>
+                            <div className="flex flex-wrap items-center gap-2 text-xs">
+                              <span
+                                className={`rounded-full border px-2.5 py-0.5 text-[11px] font-extrabold ${getSubjectBadgeClasses(
+                                  session.asignatura
+                                )}`}
+                              >
+                                {getSubjectLabel(session.asignatura, lang)}
+                              </span>
+                              <span className="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-2 py-0.5 font-semibold text-slate-700">
+                                <Calendar className="h-3 w-3 text-teal-600" />
+                                {session.date}
+                              </span>
+                              {session.type === 'writing' && typologyMeta && (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-teal-50 border border-teal-200/70 px-2.5 py-0.5 text-[11px] font-bold text-teal-800">
+                                  {typologyMeta.title[lang]}
+                                </span>
+                              )}
+                              <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-bold text-slate-600">
+                                {session.language.toUpperCase()}
+                              </span>
+                            </div>
+
+                            <h3 className="text-base font-extrabold text-slate-900 truncate">
+                              {session.title}
+                            </h3>
+                          </>
                         )}
-                      </button>
-                    )}
 
-                    {/* Light-red Cascade Delete Button */}
-                    <button
-                      type="button"
-                      onClick={() => setPendingDeleteSession(session)}
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100 hover:border-rose-300 transition"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                      <span>{t.history.deleteFullTestBtn}</span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Expandable Per-Student List (Selective Delete + Link to Dossier) */}
-                {isExpanded && (
-                  <div className="border-t border-slate-100 bg-slate-50/70 p-4 sm:px-6">
-                    <div className="divide-y divide-slate-200/70 rounded-xl border border-slate-200/90 bg-white overflow-hidden">
-                      {session.entries.map((entry) => (
-                        <div
-                          key={entry.evaluation.id}
-                          className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 hover:bg-slate-50/70 transition"
-                        >
-                          <div className="flex items-center gap-3 min-w-0">
-                            <code className="rounded bg-slate-100 px-2 py-0.5 font-mono text-[11px] font-bold text-slate-600">
-                              {entry.student.code}
-                            </code>
-                            <button
-                              type="button"
-                              onClick={() => onOpenStudentDossier(entry.student.id)}
-                              title={t.history.openDossierTooltip}
-                              className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-900 hover:text-teal-700 truncate transition"
-                            >
-                              <span className="truncate">{entry.student.fullName}</span>
-                              <ExternalLink className="h-3 w-3 shrink-0 opacity-60" />
-                            </button>
-                          </div>
-
-                          <div className="flex items-center gap-2.5 shrink-0">
-                            <span
-                              className={`rounded-lg border px-2.5 py-0.5 text-xs font-extrabold ${getScoreBadgeClasses(
-                                entry.evaluation.overallScore
-                              )}`}
-                            >
-                              {entry.evaluation.overallScore.toFixed(1)} / 10
-                            </span>
-
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteSingle(entry, session.title)}
-                              title={t.history.deleteSingleTooltip}
-                              className="inline-flex items-center gap-1 rounded-lg border border-transparent p-1.5 text-slate-400 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600 transition"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
+                        <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
+                          <span className="inline-flex items-center gap-1.5 font-semibold text-slate-700">
+                            <Users className="h-3.5 w-3.5 text-slate-400" />
+                            {t.history.evaluatedRatio(
+                              session.entries.length,
+                              session.totalStudentsInGroup
+                            )}
+                          </span>
                         </div>
-                      ))}
+                      </div>
                     </div>
+
+                    {/* Right side: Group Average + Add Work & Evaluate + Edit + Expand + Delete */}
+                    <div className="flex flex-wrap items-center justify-between lg:justify-end gap-2 shrink-0">
+                      {session.entries.length === 0 ? (
+                        <span className="inline-flex items-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] font-extrabold text-amber-800">
+                          <Sparkles className="h-3.5 w-3.5 text-amber-600" />
+                          {t.history.zeroEvaluatedBadge}
+                        </span>
+                      ) : (
+                        <div
+                          className={`rounded-xl border px-3 py-1.5 text-center ${getScoreBadgeClasses(
+                            session.averageScore
+                          )}`}
+                        >
+                          <p className="text-[9px] font-bold uppercase tracking-wider opacity-75">
+                            {t.history.groupAvgLabel}
+                          </p>
+                          <p className="text-sm font-extrabold">
+                            {session.averageScore.toFixed(1)} / 10
+                          </p>
+                        </div>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => setLateSubmissionSessionKey(session.key)}
+                        className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-bold text-white shadow-xs hover:bg-indigo-700 transition"
+                      >
+                        <UserPlus className="h-3.5 w-3.5" />
+                        <span>{t.history.addLateStudentBtn}</span>
+                      </button>
+
+                      {editingSessionKey !== session.key && (
+                        <button
+                          type="button"
+                          onClick={() => handleStartEditSession(session)}
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:border-amber-300 hover:bg-amber-50 hover:text-amber-800 transition"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                          <span>{t.history.editTestBtn}</span>
+                        </button>
+                      )}
+
+                      {session.entries.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => toggleSession(session.key)}
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
+                        >
+                          <span>
+                            {isExpanded ? t.history.hideStudentsBtn : t.history.viewStudentsBtn}
+                          </span>
+                          {isExpanded ? (
+                            <ChevronUp className="h-4 w-4 text-slate-400" />
+                          ) : (
+                            <ChevronDown className="h-4 w-4 text-slate-400" />
+                          )}
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => setPendingDeleteSession(session)}
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100 hover:border-rose-300 transition"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        <span>{t.history.deleteFullTestBtn}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Expandable Per-Student List (Selective Delete + Link to Dossier) */}
+                  {isExpanded && (
+                    <div className="border-t border-slate-100 bg-slate-50/70 p-4 sm:px-6">
+                      <div className="divide-y divide-slate-200/70 rounded-xl border border-slate-200/90 bg-white overflow-hidden">
+                        {session.entries.map((entry) => (
+                          <div
+                            key={entry.evaluation.id}
+                            className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 hover:bg-slate-50/70 transition"
+                          >
+                            <div className="flex items-center gap-3 min-w-0">
+                              <code className="rounded bg-slate-100 px-2 py-0.5 font-mono text-[11px] font-bold text-slate-600">
+                                {entry.student.code}
+                              </code>
+                              <button
+                                type="button"
+                                onClick={() => onOpenStudentDossier(entry.student.id)}
+                                title={t.history.openDossierTooltip}
+                                className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-900 hover:text-teal-700 truncate transition"
+                              >
+                                <span className="truncate">{entry.student.fullName}</span>
+                                <ExternalLink className="h-3 w-3 shrink-0 opacity-60" />
+                              </button>
+                            </div>
+
+                            <div className="flex items-center gap-2.5 shrink-0">
+                              <span
+                                className={`rounded-lg border px-2.5 py-0.5 text-xs font-extrabold ${getScoreBadgeClasses(
+                                  entry.evaluation.overallScore
+                                )}`}
+                              >
+                                {entry.evaluation.overallScore.toFixed(1)} / 10
+                              </span>
+
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteSingle(entry, session.title)}
+                                title={t.history.deleteSingleTooltip}
+                                className="inline-flex items-center gap-1 rounded-lg border border-transparent p-1.5 text-slate-400 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600 transition"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            };
+
+            return (
+              <section
+                key={group.id}
+                className={`rounded-2xl border bg-white shadow-2xs overflow-hidden transition-all duration-200 ${
+                  isClassExpanded
+                    ? 'border-amber-300/90 shadow-xs'
+                    : 'border-slate-200/90 hover:border-amber-300/70'
+                }`}
+              >
+                {/* LEVEL 1: Class Header */}
+                <button
+                  type="button"
+                  aria-expanded={isClassExpanded}
+                  onClick={() => toggleClassExpanded(group.id)}
+                  className={`flex w-full items-center justify-between gap-3 px-4 py-4 sm:px-5 text-left transition-colors ${
+                    isClassExpanded
+                      ? 'bg-gradient-to-r from-amber-50/70 via-white to-white border-b border-slate-100'
+                      : 'bg-white hover:bg-slate-50/80'
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center gap-2.5 min-w-0">
+                    <span
+                      className={`h-3 w-3 shrink-0 rounded-full ${GROUP_DOT_CLASSES[group.color]}`}
+                    />
+                    <GraduationCap className="h-4 w-4 text-amber-600 shrink-0" />
+                    <span className="text-base font-extrabold text-slate-900 truncate">
+                      {group.name}
+                    </span>
+                    <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold text-slate-600">
+                      {group.academicYear}
+                    </span>
+                    <span className="rounded-full bg-amber-50 border border-amber-200/80 px-2.5 py-0.5 text-[11px] font-bold text-amber-800">
+                      {t.history.testsCountBadge(total)}
+                    </span>
+                  </div>
+
+                  <span
+                    className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border transition ${
+                      isClassExpanded
+                        ? 'border-amber-200 bg-amber-50 text-amber-700'
+                        : 'border-slate-200 bg-slate-50 text-slate-500'
+                    }`}
+                  >
+                    {isClassExpanded ? (
+                      <ChevronUp className="h-4 w-4" />
+                    ) : (
+                      <ChevronDown className="h-4 w-4" />
+                    )}
+                  </span>
+                </button>
+
+                {/* LEVEL 2: Skill / Modality (Irakurmena & Idazmena) */}
+                {isClassExpanded && (
+                  <div className="panel-slide-down p-3 sm:p-4 space-y-2.5 bg-slate-50/50">
+                    {modalities.map((mod) => {
+                      if (modalityFilter !== 'all' && modalityFilter !== mod.skill) {
+                        return null;
+                      }
+                      const modKey = `${group.id}::${mod.skill}`;
+                      const isModExpanded = hasActiveHistoryFilter
+                        ? mod.sessions.length > 0
+                        : Boolean(expandedModalityKeys[modKey]);
+                      const ModIcon = mod.icon;
+
+                      return (
+                        <div
+                          key={modKey}
+                          className={`rounded-xl border bg-white overflow-hidden transition-all ${
+                            isModExpanded ? mod.accentActive : 'border-slate-200/90'
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            aria-expanded={isModExpanded}
+                            onClick={() => toggleModalityExpanded(group.id, mod.skill)}
+                            className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-slate-50/70 transition min-h-[48px]"
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <span
+                                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${mod.iconClasses}`}
+                              >
+                                <ModIcon className="h-4 w-4" />
+                              </span>
+                              <span className="text-sm font-extrabold text-slate-900 truncate">
+                                {mod.title}
+                              </span>
+                              <span
+                                className={`rounded-full border px-2.5 py-0.5 text-[11px] font-bold shrink-0 ${mod.badgeClasses}`}
+                              >
+                                {t.history.testsCountBadge(mod.sessions.length)}
+                              </span>
+                            </div>
+
+                            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/80 border border-slate-200 text-slate-500">
+                              {isModExpanded ? (
+                                <ChevronUp className="h-4 w-4" />
+                              ) : (
+                                <ChevronDown className="h-4 w-4" />
+                              )}
+                            </span>
+                          </button>
+
+                          {/* LEVEL 3: Saved Tests for this Class + Modality */}
+                          {isModExpanded && (
+                            <div className="panel-slide-down border-t border-slate-100 bg-slate-50/60 p-3 sm:p-4 space-y-3">
+                              {mod.sessions.length === 0 ? (
+                                <p className="text-xs text-slate-500 py-2 px-1">
+                                  {t.history.noTestsInModality}
+                                </p>
+                              ) : (
+                                mod.sessions.map((session) => renderSessionCard(session))
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
-              </div>
+              </section>
             );
           })}
         </div>

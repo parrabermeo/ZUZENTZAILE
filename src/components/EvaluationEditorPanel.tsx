@@ -14,21 +14,31 @@ import {
   Copy,
   Check,
   ArrowRight,
+  AlertTriangle,
+  XCircle,
 } from 'lucide-react';
 import type {
   AiEvaluationDraft,
   GeminiModelId,
+  Language,
   LinguisticCorrection,
   ReasoningEffort,
   Rubric,
+  SubjectId,
 } from '../types';
 import type { Translations } from '../i18n/translations';
 import { calculateWeightedScore } from '../services/geminiService';
+import { getSubjectLabel, languageToSubject, subjectToLanguage } from '../utils/subjects';
+import { EmailReportButtons } from './EmailReportButtons';
 
 interface EvaluationEditorPanelProps {
   draft: AiEvaluationDraft;
   rubric: Rubric;
   studentName: string;
+  studentEmail?: string;
+  asignatura?: SubjectId;
+  testTitle?: string;
+  evalLanguage?: Language;
   modelUsed: GeminiModelId;
   reasoningLevel: ReasoningEffort;
   hasNextPending: boolean;
@@ -37,6 +47,7 @@ interface EvaluationEditorPanelProps {
   onChangeDraft: (next: AiEvaluationDraft) => void;
   onSave?: (goToNextPending: boolean) => void;
   onGoToNextPending?: () => void;
+  onEditStudentEmail?: () => void;
   t: Translations;
 }
 
@@ -63,6 +74,10 @@ export const EvaluationEditorPanel: React.FC<EvaluationEditorPanelProps> = ({
   draft,
   rubric,
   studentName,
+  studentEmail,
+  asignatura,
+  testTitle,
+  evalLanguage,
   modelUsed,
   reasoningLevel,
   hasNextPending,
@@ -71,9 +86,14 @@ export const EvaluationEditorPanel: React.FC<EvaluationEditorPanelProps> = ({
   onChangeDraft,
   onSave,
   onGoToNextPending,
+  onEditStudentEmail,
   t,
 }) => {
   const [copiedFeedback, setCopiedFeedback] = useState(false);
+  const resolvedSubject: SubjectId =
+    asignatura || rubric.asignatura || languageToSubject(evalLanguage || rubric.language);
+  const resolvedEvalLang: Language = evalLanguage || subjectToLanguage(resolvedSubject);
+  const resolvedTestTitle = testTitle || rubric.title;
 
   const computedFromRubric = calculateWeightedScore(draft.criteria);
   const isManualScoreOverridden = Math.abs(draft.finalScore - computedFromRubric) > 0.05;
@@ -523,9 +543,97 @@ export const EvaluationEditorPanel: React.FC<EvaluationEditorPanelProps> = ({
             )}
           </section>
 
-          {/* 5. Motivating Student Feedback */}
+          {/* 5. Pending Subject Assessment (LH4 / LH5) when applicable */}
+          {draft.pendingSubjectAssessment && (
+            <section
+              className={`rounded-2xl border p-4 space-y-3 ${
+                draft.pendingSubjectAssessment.sufficient
+                  ? 'border-emerald-300 bg-emerald-50/50'
+                  : 'border-amber-300 bg-amber-50/60'
+              }`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h4 className="flex items-center gap-2 text-xs font-extrabold text-slate-900">
+                  <AlertTriangle
+                    className={`h-4 w-4 shrink-0 ${
+                      draft.pendingSubjectAssessment.sufficient
+                        ? 'text-emerald-600'
+                        : 'text-amber-600'
+                    }`}
+                  />
+                  <span>
+                    {t.dossier.pendingEvalCardTitle(
+                      getSubjectLabel(draft.pendingSubjectAssessment.subject, resolvedEvalLang),
+                      draft.pendingSubjectAssessment.pendingCourse
+                    )}
+                  </span>
+                </h4>
+
+                <div className="inline-flex rounded-xl bg-white border border-slate-200 p-0.5 gap-1">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onChangeDraft({
+                        ...draft,
+                        pendingSubjectAssessment: {
+                          ...draft.pendingSubjectAssessment!,
+                          sufficient: true,
+                        },
+                      })
+                    }
+                    className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition ${
+                      draft.pendingSubjectAssessment.sufficient
+                        ? 'bg-emerald-600 text-white shadow-2xs'
+                        : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    {t.dossier.pendingEvalSufficient}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onChangeDraft({
+                        ...draft,
+                        pendingSubjectAssessment: {
+                          ...draft.pendingSubjectAssessment!,
+                          sufficient: false,
+                        },
+                      })
+                    }
+                    className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition ${
+                      !draft.pendingSubjectAssessment.sufficient
+                        ? 'bg-rose-600 text-white shadow-2xs'
+                        : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <XCircle className="h-3.5 w-3.5" />
+                    {t.dossier.pendingEvalInsufficient}
+                  </button>
+                </div>
+              </div>
+
+              <textarea
+                value={draft.pendingSubjectAssessment.justification}
+                onChange={(e) =>
+                  onChangeDraft({
+                    ...draft,
+                    pendingSubjectAssessment: {
+                      ...draft.pendingSubjectAssessment!,
+                      justification: e.target.value,
+                    },
+                  })
+                }
+                rows={2}
+                placeholder={t.dossier.pendingEvalJustificationPlaceholder}
+                className="w-full rounded-xl border border-slate-200 bg-white p-3 text-xs leading-relaxed text-slate-800 focus:border-indigo-500 focus:outline-none"
+              />
+            </section>
+          )}
+
+          {/* 6. Motivating Student Feedback */}
           <section className="rounded-2xl border border-teal-200/80 bg-teal-50/40 p-4 space-y-2.5">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <h4 className="flex items-center gap-2 text-xs font-extrabold text-teal-900">
                 <MessageSquareHeart className="h-4 w-4 text-teal-600" />
                 {t.evaluate.results.feedbackTitle}
@@ -553,6 +661,23 @@ export const EvaluationEditorPanel: React.FC<EvaluationEditorPanelProps> = ({
               onChange={(e) => onChangeDraft({ ...draft, studentFeedback: e.target.value })}
               rows={4}
               className="w-full rounded-xl border border-teal-200/80 bg-white p-3.5 text-sm leading-relaxed text-slate-800 focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/15"
+            />
+          </section>
+
+          {/* 7. Send / Copy Student Evaluation Report via Email */}
+          <section className="rounded-2xl border border-indigo-200/80 bg-indigo-50/35 p-3.5">
+            <EmailReportButtons
+              studentName={studentName}
+              studentEmail={studentEmail}
+              asignatura={resolvedSubject}
+              testTitle={resolvedTestTitle}
+              language={resolvedEvalLang}
+              strengths={draft.strengths}
+              improvements={draft.improvements}
+              linguisticCorrections={draft.linguisticCorrections}
+              feedbackSummary={draft.studentFeedback}
+              onEditStudentEmail={onEditStudentEmail}
+              t={t}
             />
           </section>
         </div>

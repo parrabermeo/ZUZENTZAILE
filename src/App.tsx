@@ -28,6 +28,7 @@ import type {
   GroupColor,
   Language,
   NavTab,
+  PendingSubjects,
   Rubric,
   SavedTestDefinition,
   StorageMode,
@@ -532,6 +533,8 @@ export function App() {
   // Student CRUD
   const handleAddStudent = (data: {
     fullName: string;
+    email?: string;
+    pendingSubjects?: PendingSubjects;
     groupId: string;
     tags: string[];
     notes: string;
@@ -540,6 +543,8 @@ export function App() {
     const code = generateNextStudentCode(group, students);
     const created = createStudentRecord({
       fullName: data.fullName,
+      email: data.email,
+      pendingSubjects: data.pendingSubjects,
       groupId: group.id,
       code,
       tags: data.tags,
@@ -551,7 +556,14 @@ export function App() {
 
   const handleUpdateStudent = (
     studentId: string,
-    data: { fullName: string; groupId: string; tags: string[]; notes: string }
+    data: {
+      fullName: string;
+      email?: string;
+      pendingSubjects?: PendingSubjects;
+      groupId: string;
+      tags: string[];
+      notes: string;
+    }
   ) => {
     setStudents((prev) =>
       prev.map((s) =>
@@ -559,6 +571,15 @@ export function App() {
           ? {
               ...s,
               fullName: data.fullName,
+              email: data.email?.trim() || undefined,
+              pendingSubjects:
+                data.pendingSubjects &&
+                (data.pendingSubjects.euskera || data.pendingSubjects.lengua)
+                  ? {
+                      euskera: data.pendingSubjects.euskera || null,
+                      lengua: data.pendingSubjects.lengua || null,
+                    }
+                  : undefined,
               groupId: data.groupId,
               tags: data.tags,
               notes: data.notes,

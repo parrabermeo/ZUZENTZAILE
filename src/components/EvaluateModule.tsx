@@ -186,6 +186,12 @@ function mergeContinuationIntoPrevious(
       improvements: mergedImprovements,
       linguisticCorrections: mergedCorrections,
       studentFeedback: mergedFeedback,
+      ...(cont.draft.pendingSubjectAssessment || prev.draft.pendingSubjectAssessment
+        ? {
+            pendingSubjectAssessment:
+              cont.draft.pendingSubjectAssessment || prev.draft.pendingSubjectAssessment,
+          }
+        : {}),
     },
   };
 }
@@ -584,6 +590,11 @@ export const EvaluateModule: React.FC<EvaluateModuleProps> = ({
       const typologyMeta = TEXT_TYPOLOGIES.find((item) => item.id === typology);
       const effectiveTitle = activityTitle.trim();
 
+      const pendingCourse =
+        activeSubject === 'euskera'
+          ? selectedStudent.pendingSubjects?.euskera ?? null
+          : selectedStudent.pendingSubjects?.lengua ?? null;
+
       const result = await evaluateStudentWorkWithAI({
         userApiKey: settings.geminiApiKey,
         model: settings.geminiModel,
@@ -597,6 +608,7 @@ export const EvaluateModule: React.FC<EvaluateModuleProps> = ({
         rubric: activeRubric,
         studentName: selectedStudent.fullName,
         studentTags: selectedStudent.tags,
+        pendingCourse,
         studentText: studentText.trim(),
         images: inputMode === 'image' ? images : undefined,
       });
@@ -693,6 +705,9 @@ export const EvaluateModule: React.FC<EvaluateModuleProps> = ({
         (c) => c.original.trim() || c.correction.trim()
       ),
       feedbackSummary: draft.studentFeedback.trim(),
+      ...(draft.pendingSubjectAssessment
+        ? { pendingSubjectAssessment: draft.pendingSubjectAssessment }
+        : {}),
       modelUsed: settings.geminiModel,
       reasoningLevel,
       createdAt: new Date().toISOString(),
@@ -1142,6 +1157,9 @@ export const EvaluateModule: React.FC<EvaluateModuleProps> = ({
           (c) => c.original.trim() || c.correction.trim()
         ),
         feedbackSummary: item.draft.studentFeedback.trim(),
+        ...(item.draft.pendingSubjectAssessment
+          ? { pendingSubjectAssessment: item.draft.pendingSubjectAssessment }
+          : {}),
         modelUsed: settings.geminiModel,
         reasoningLevel: 'low',
         createdAt: now,
@@ -1883,6 +1901,7 @@ export const EvaluateModule: React.FC<EvaluateModuleProps> = ({
                 highlightEvaluate={
                   step3Done && step5HasWork && !batchProcessing && batchItems.length === 0
                 }
+                testTitle={activityTitle.trim() || activeRubric.title}
                 t={t}
               />
             ) : (
@@ -2166,6 +2185,10 @@ export const EvaluateModule: React.FC<EvaluateModuleProps> = ({
           draft={draft}
           rubric={activeRubric}
           studentName={selectedStudent.fullName}
+          studentEmail={selectedStudent.email}
+          asignatura={activeSubject}
+          testTitle={activityTitle.trim() || activeRubric.title}
+          evalLanguage={evalLang}
           modelUsed={settings.geminiModel}
           reasoningLevel={reasoningLevel}
           hasNextPending={Boolean(nextPendingStudent && nextPendingStudent.id !== selectedStudent.id)}

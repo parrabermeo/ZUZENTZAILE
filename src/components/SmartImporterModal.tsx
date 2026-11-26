@@ -100,6 +100,12 @@ export const SmartImporterModal: React.FC<SmartImporterModalProps> = ({
     );
   };
 
+  const handleEmailEdit = (tempId: string, email: string) => {
+    setCandidates((prev) =>
+      prev.map((c) => (c.tempId === tempId ? { ...c, email: email.trim() || undefined } : c))
+    );
+  };
+
   const handleToggleRowTag = (tempId: string, tagId: string) => {
     setCandidates((prev) =>
       prev.map((c) => {
@@ -119,6 +125,7 @@ export const SmartImporterModal: React.FC<SmartImporterModalProps> = ({
     const newStudents = selectedCandidates.map((cand) =>
       createStudentRecord({
         fullName: cand.fullName,
+        email: cand.email,
         groupId: targetGroup.id,
         code: cand.code,
         tags: cand.tags,
@@ -317,12 +324,19 @@ export const SmartImporterModal: React.FC<SmartImporterModalProps> = ({
                             {cand.code}
                           </code>
                         </td>
-                        <td className="py-2.5 px-2">
+                        <td className="py-2.5 px-2 space-y-1">
                           <input
                             type="text"
                             value={cand.fullName}
                             onChange={(e) => handleNameEdit(cand.tempId, e.target.value)}
                             className="w-full rounded-lg border border-transparent bg-transparent px-1.5 py-1 text-xs font-semibold text-slate-800 hover:border-slate-200 focus:border-teal-500 focus:bg-white focus:outline-none"
+                          />
+                          <input
+                            type="email"
+                            value={cand.email || ''}
+                            onChange={(e) => handleEmailEdit(cand.tempId, e.target.value)}
+                            placeholder="email@..."
+                            className="w-full rounded-lg border border-transparent bg-transparent px-1.5 py-0.5 text-[11px] text-slate-500 placeholder:text-slate-300 hover:border-slate-200 focus:border-indigo-400 focus:bg-white focus:text-slate-800 focus:outline-none"
                           />
                         </td>
                         <td className="py-2.5 px-2">

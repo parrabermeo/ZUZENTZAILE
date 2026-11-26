@@ -6,6 +6,7 @@ import type {
   GeminiModelId,
   Language,
   LinguisticCorrection,
+  PendingSubjectAssessment,
   ReasoningEffort,
   Rubric,
   RubricCriterion,
@@ -589,6 +590,28 @@ const EVALUATION_RESPONSE_SCHEMA: Schema = {
       description:
         'Warm, motivating, and constructive feedback message addressed directly to the 6th-grade student in the test language.',
     },
+    valoracionPendiente: {
+      type: Type.OBJECT,
+      description:
+        'Include ONLY when the student has a pending subject from 4th (LH4) or 5th (LH5) grade in this evaluated language. Evaluates whether the demonstrated level is sufficient to pass that pending subject.',
+      properties: {
+        cursoPendiente: {
+          type: Type.STRING,
+          description: 'Pending grade level: "LH4" or "LH5".',
+        },
+        suficiente: {
+          type: Type.BOOLEAN,
+          description:
+            'true if the level shown in this exercise meets the minimum curricular criteria to pass the pending 4th or 5th grade subject; false otherwise.',
+        },
+        justificacion: {
+          type: Type.STRING,
+          description:
+            'Brief pedagogical justification (2-3 sentences in the test language) explaining why the student meets or does not yet meet the minimum criteria of LH4/LH5.',
+        },
+      },
+      required: ['cursoPendiente', 'suficiente', 'justificacion'],
+    },
   },
   required: [
     'transcripcion',
@@ -600,6 +623,12 @@ const EVALUATION_RESPONSE_SCHEMA: Schema = {
     'feedbackAlumno',
   ],
 };
+
+interface RawPendingAssessment {
+  cursoPendiente?: string;
+  suficiente?: boolean;
+  justificacion?: string;
+}
 
 interface AiEvaluationRawResponse {
   transcripcion: string;
@@ -619,6 +648,33 @@ interface AiEvaluationRawResponse {
     tipo?: string;
   }>;
   feedbackAlumno: string;
+  valoracionPendiente?: RawPendingAssessment;
+}
+
+function normalizePendingAssessment(
+  raw: RawPendingAssessment | undefined,
+  evalLanguage: Language,
+  expectedCourse?: 'LH4' | 'LH5' | null
+): PendingSubjectAssessment | undefined {
+  if (!expectedCourse && !raw?.justificacion?.trim()) return undefined;
+  const rawCourse = (raw?.cursoPendiente || expectedCourse || '').toUpperCase().trim();
+  const pendingCourse: 'LH4' | 'LH5' | null =
+    rawCourse === 'LH4' || rawCourse.includes('4')
+      ? 'LH4'
+      : rawCourse === 'LH5' || rawCourse.includes('5')
+        ? 'LH5'
+        : expectedCourse || null;
+
+  if (!pendingCourse) return undefined;
+  const justification = typeof raw?.justificacion === 'string' ? raw.justificacion.trim() : '';
+  if (!justification && !expectedCourse) return undefined;
+
+  return {
+    subject: evalLanguage === 'es' ? 'castellano' : 'euskera',
+    pendingCourse,
+    sufficient: Boolean(raw?.suficiente),
+    justification,
+  };
 }
 
 export interface UploadedImageInput {
@@ -640,6 +696,7 @@ export interface EvaluateStudentWorkParams {
   rubric: Rubric;
   studentName: string;
   studentTags?: string[];
+  pendingCourse?: 'LH4' | 'LH5' | null;
   studentText?: string;
   images?: UploadedImageInput[];
 }
@@ -693,6 +750,23 @@ export async function evaluateStudentWorkWithAI(
       ? `\nNota orientativa para el tono del feedback: el alumno cuenta con etiquetas de atención a la diversidad (${params.studentTags.join(', ')}). Aplica los criterios de la rúbrica con rigor pedagógico pero cuida que "feedbackAlumno" sea especialmente claro, cercano y motivador.`
       : '';
 
+  const pendingGradeLabel =
+    params.pendingCourse === 'LH4'
+      ? '4º de Educación Primaria (LH4)'
+      : params.pendingCourse === 'LH5'
+        ? '5º de Educación Primaria (LH5)'
+        : null;
+
+  const pendingSubjectDirective =
+    params.pendingCourse && pendingGradeLabel
+      ? `\nASIGNATURA PENDIENTE DE CURSO ANTERIOR (MUY IMPORTANTE):
+Este alumno/a tiene pendiente la asignatura de ${subjectLabel} correspondiente a ${pendingGradeLabel}.
+Además de corregir la prueba actual de 6º de Primaria según el Decreto 77/2023, DEBES incluir obligatoriamente el objeto "valoracionPendiente" en el JSON con:
+- "cursoPendiente": "${params.pendingCourse}"
+- "suficiente": true si el nivel demostrado en este ejercicio alcanza los criterios mínimos exigibles para superar/aprobar ${subjectLabel} de ${pendingGradeLabel}, o false si todavía no es suficiente.
+- "justificacion": explicación breve y clara (2-3 frases en ${langName}) justificando el motivo según los criterios mínimos de ${pendingGradeLabel} (comprensión básica, estructura, ortografía/gramática mínima de ese curso).`
+      : '';
+
   const inputInstruction = hasImages
     ? `TRABAJO DEL ALUMNO: Se adjuntan ${params.images!.length} imagen(es) del cuaderno manuscrito del alumno (después de las imágenes de la prueba de referencia, si las hubiera).
 1. Primero, transcribe fielmente el texto manuscrito del alumno en el campo "transcripcion" (respetando la ortografía y errores reales del alumno sin corregirlos en la transcripción, para que el docente pueda revisar lo que escribió exactamente).
@@ -710,7 +784,7 @@ DATOS DE LA ACTIVIDAD:
 - Título de la actividad: ${params.activityTitle || 'Actividad de evaluación LH6'}
 - Modalidad: ${params.skill === 'writing' ? `Expresión Escrita (Idazmena) - ${params.typologyLabel || ''}` : 'Comprensión Escrita (Irakurmenaren Ulermena)'}
 - Rúbrica aplicada: ${params.rubric.title}
-${referenceDirectiveBlock}${contextSection}${tagsNote}
+${referenceDirectiveBlock}${contextSection}${tagsNote}${pendingSubjectDirective}
 
 RÚBRICA OFICIAL A APLICAR (escala 1 a 4, ponderada sobre 10 puntos):
 ${rubricBlock}
@@ -818,6 +892,12 @@ INSTRUCCIONES DE EVALUACIÓN:
       };
     });
 
+  const pendingSubjectAssessment = normalizePendingAssessment(
+    parsed.valoracionPendiente,
+    params.evalLanguage,
+    params.pendingCourse
+  );
+
   return {
     transcription: parsed.transcripcion?.trim() || params.studentText?.trim() || '',
     criteria,
@@ -826,6 +906,7 @@ INSTRUCCIONES DE EVALUACIÓN:
     improvements: (parsed.aspectosMejorar || []).map((s) => s.trim()).filter(Boolean),
     linguisticCorrections,
     studentFeedback: parsed.feedbackAlumno?.trim() || '',
+    ...(pendingSubjectAssessment ? { pendingSubjectAssessment } : {}),
   };
 }
 
@@ -914,6 +995,17 @@ const BATCH_PDF_RESPONSE_SCHEMA: Schema = {
             type: Type.STRING,
             description: 'Feedback motivador y constructivo dirigido al alumno en el idioma de la prueba.',
           },
+          valoracionPendiente: {
+            type: Type.OBJECT,
+            description:
+              'Incluir ÚNICAMENTE si el alumno emparejado tiene pendiente esta asignatura de 4º (LH4) o 5º (LH5) según la lista oficial del grupo.',
+            properties: {
+              cursoPendiente: { type: Type.STRING },
+              suficiente: { type: Type.BOOLEAN },
+              justificacion: { type: Type.STRING },
+            },
+            required: ['cursoPendiente', 'suficiente', 'justificacion'],
+          },
         },
         required: [
           'paginas',
@@ -979,13 +1071,28 @@ export async function evaluateBatchPhotoWithAI(
   const hasReferenceText = Boolean(params.exerciseContext?.trim());
 
   const rosterBlock = safeRoster
-    .map(
-      (s) =>
-        `- studentId: "${s.id}" | Código: ${s.code} | Nombre completo: "${s.fullName}"${
-          s.tags.length > 0 ? ` | Etiquetas: ${s.tags.join(', ')}` : ''
-        }`
-    )
+    .map((s) => {
+      const pendingForSubject =
+        params.evalLanguage === 'eu'
+          ? s.pendingSubjects?.euskera ?? null
+          : s.pendingSubjects?.lengua ?? null;
+      return `- studentId: "${s.id}" | Código: ${s.code} | Nombre completo: "${s.fullName}"${
+        s.tags.length > 0 ? ` | Etiquetas: ${s.tags.join(', ')}` : ''
+      }${
+        pendingForSubject
+          ? ` | ASIGNATURA PENDIENTE DE CURSO ANTERIOR: ${
+              params.evalLanguage === 'eu' ? 'Euskera' : 'Lengua Castellana'
+            } ${pendingForSubject}`
+          : ''
+      }`;
+    })
     .join('\n');
+
+  const hasAnyPendingInRoster = safeRoster.some((s) =>
+    params.evalLanguage === 'eu'
+      ? Boolean(s.pendingSubjects?.euskera)
+      : Boolean(s.pendingSubjects?.lengua)
+  );
 
   const rubricBlock = safeRubricCriteria
     .map(
@@ -1052,8 +1159,11 @@ INSTRUCCIONES CRÍTICAS PARA ESTA FOTO (${photoLabel}):
 6. En "transcripcion", transcribe fielmente y de forma concisa el texto manuscrito del alumno conservando sus errores reales para el diagnóstico.
 7. Evalúa TODOS los ${safeRubricCriteria.length} criterios de la rúbrica usando su "criterionId" exacto (niveles 1 a 4, justificación breve de 1 frase) y calcula "notaFinal" sobre 10 (1 decimal).
 8. ${linguisticFocus}
-9. Redacta un "feedbackAlumno" breve (2-3 frases), cercano y motivador en ${langName}.
-10. Devuelve ÚNICAMENTE JSON válido con la clave "evaluacionesLote", sin markdown ni texto adicional.`;
+9. Redacta un "feedbackAlumno" breve (2-3 frases), cercano y motivador en ${langName}.${
+    hasAnyPendingInRoster
+      ? `\n10. VALORACIÓN DE ASIGNATURA PENDIENTE (LH4/LH5): Si el alumno emparejado tiene indicada una ASIGNATURA PENDIENTE DE CURSO ANTERIOR en la lista oficial, incluye OBLIGATORIAMENTE "valoracionPendiente" ({ "cursoPendiente": "LH4"|"LH5", "suficiente": true|false, "justificacion": "..." en ${langName} }) valorando explícitamente si el nivel demostrado en el ejercicio es suficiente para aprobar esa materia pendiente según sus criterios mínimos.\n11. Devuelve ÚNICAMENTE JSON válido con la clave "evaluacionesLote", sin markdown ni texto adicional.`
+      : `\n10. Devuelve ÚNICAMENTE JSON válido con la clave "evaluacionesLote", sin markdown ni texto adicional.`
+  }`;
 
   const parts: Part[] = [{ text: promptText }];
   if (hasReferenceImages) {
@@ -1220,6 +1330,20 @@ INSTRUCCIONES CRÍTICAS PARA ESTA FOTO (${photoLabel}):
           ? `batch-${crypto.randomUUID()}`
           : `batch-${Date.now()}-${params.photoNumber}-${itemIdx}-${Math.random().toString(36).slice(2, 8)}`;
 
+      const matchedStudentObj = matchedStudentId
+        ? safeRoster.find((s) => s.id === matchedStudentId)
+        : undefined;
+      const expectedPendingCourse = matchedStudentObj
+        ? params.evalLanguage === 'eu'
+          ? matchedStudentObj.pendingSubjects?.euskera ?? null
+          : matchedStudentObj.pendingSubjects?.lengua ?? null
+        : null;
+      const pendingSubjectAssessment = normalizePendingAssessment(
+        rawItem?.valoracionPendiente,
+        params.evalLanguage,
+        expectedPendingCourse
+      );
+
       return {
         batchItemId: uniqueBatchId,
         pages: photoLabel,
@@ -1240,6 +1364,7 @@ INSTRUCCIONES CRÍTICAS PARA ESTA FOTO (${photoLabel}):
           linguisticCorrections,
           studentFeedback:
             typeof rawItem?.feedbackAlumno === 'string' ? rawItem.feedbackAlumno.trim() : '',
+          ...(pendingSubjectAssessment ? { pendingSubjectAssessment } : {}),
         },
       };
     });

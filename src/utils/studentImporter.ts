@@ -1,13 +1,17 @@
-import type { ClassGroup, Student } from '../types';
+import type { ClassGroup, PendingSubjects, Student } from '../types';
+import { findMatchingStudentEmail } from '../data/studentEmailDirectory';
 
 export interface ParsedImportCandidate {
   tempId: string;
   fullName: string;
+  email?: string;
   code: string;
   tags: string[];
   isDuplicate: boolean;
   selected: boolean;
 }
+
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const HEADER_KEYWORDS = new Set([
   'nombre',
@@ -29,11 +33,56 @@ const HEADER_KEYWORDS = new Set([
   'name',
   'full name',
   'student',
+  'email',
+  'e-mail',
+  'mail',
+  'correo',
+  'correo electronico',
+  'posta',
+  'posta elektronikoa',
   'id',
   'nº',
   'no',
   '#',
 ]);
+
+/**
+ * Splits a CSV/TSV/semicolon line while respecting double-quoted cells
+ * such as `"Bejarano Perez, Aimar",aimarbejarano@ignacioaldekoa.net`.
+ */
+function splitDelimitedLine(line: string, delimiter: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === delimiter && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  result.push(current.trim());
+  return result;
+}
+
+function reorderSurnameCommaName(raw: string): string {
+  if (!raw.includes(',')) return raw;
+  const parts = raw.split(',').map((p) => p.trim()).filter(Boolean);
+  if (parts.length === 2) {
+    return `${parts[1]} ${parts[0]}`;
+  }
+  return raw;
+}
 
 const LOWERCASE_PARTICLES = new Set(['de', 'del', 'la', 'las', 'los', 'el', 'y', 'i', 'e', 'eta']);
 
@@ -161,20 +210,24 @@ export function parseSmartStudentInput(
     .map((l) => l.trim())
     .filter(Boolean);
 
-  const extractedItems: Array<{ fullName: string; tags: string[] }> = [];
+  const extractedItems: Array<{ fullName: string; email?: string; tags: string[] }> = [];
 
   // Single-line comma/semicolon list (e.g., "Ane Agirre, Jon Lasa, Irati Gil")
-  if (rawLines.length === 1 && (rawLines[0].includes(',') || rawLines[0].includes(';'))) {
+  if (
+    rawLines.length === 1 &&
+    (rawLines[0].includes(',') || rawLines[0].includes(';')) &&
+    !rawLines[0].includes('@')
+  ) {
     const sep = rawLines[0].includes(';') ? ';' : ',';
-    const pieces = rawLines[0]
-      .split(sep)
-      .map((p) => p.trim())
-      .filter(Boolean);
+    const pieces = splitDelimitedLine(rawLines[0], sep).filter(Boolean);
 
     for (const piece of pieces) {
       const parsed = extractNameAndInlineTags(piece);
       if (parsed.fullName && !isHeaderRow([parsed.fullName])) {
-        extractedItems.push(parsed);
+        extractedItems.push({
+          ...parsed,
+          email: findMatchingStudentEmail(parsed.fullName),
+        });
       }
     }
   } else {
@@ -186,11 +239,11 @@ export function parseSmartStudentInput(
 
       let cols: string[] = [line];
       if (hasTab) {
-        cols = line.split('\t').map((c) => c.trim());
+        cols = splitDelimitedLine(line, '\t');
       } else if (hasSemi) {
-        cols = line.split(';').map((c) => c.trim());
+        cols = splitDelimitedLine(line, ';');
       } else if (hasComma) {
-        cols = line.split(',').map((c) => c.trim());
+        cols = splitDelimitedLine(line, ',');
       }
 
       // Remove empty trailing columns and leading pure row-index columns (e.g. Excel "1\tAne Agirre")
@@ -205,21 +258,30 @@ export function parseSmartStudentInput(
       }
 
       if (cols.length === 1) {
-        const parsed = extractNameAndInlineTags(cols[0]);
+        const parsed = extractNameAndInlineTags(reorderSurnameCommaName(cols[0]));
         if (parsed.fullName && !isHeaderRow([parsed.fullName])) {
-          extractedItems.push(parsed);
+          extractedItems.push({
+            ...parsed,
+            email: findMatchingStudentEmail(parsed.fullName),
+          });
         }
       } else {
-        // Multi-column line: check if trailing columns are tags or surname/name pairs
+        // Multi-column line: detect optional email column, tags, and name parts
         const detectedTags: string[] = [];
         const nameParts: string[] = [];
+        let detectedEmail: string | undefined;
 
         for (const col of cols) {
-          const maybeTag = detectTagToken(col);
+          const cleanCol = col.trim();
+          if (EMAIL_REGEX.test(cleanCol)) {
+            detectedEmail = cleanCol.toLowerCase();
+            continue;
+          }
+          const maybeTag = detectTagToken(cleanCol);
           if (maybeTag && nameParts.length > 0) {
             detectedTags.push(maybeTag);
           } else {
-            const inline = extractNameAndInlineTags(col);
+            const inline = extractNameAndInlineTags(reorderSurnameCommaName(cleanCol));
             if (inline.fullName) nameParts.push(inline.fullName);
             detectedTags.push(...inline.tags);
           }
@@ -228,7 +290,6 @@ export function parseSmartStudentInput(
         if (nameParts.length === 0) continue;
 
         let combinedName: string;
-        // Handle "Apellidos, Nombre" CSV convention when comma-separated with 2 columns and no spaces in second col
         if (
           hasComma &&
           !hasTab &&
@@ -238,7 +299,6 @@ export function parseSmartStudentInput(
           nameParts[0].split(/\s+/).length >= 1 &&
           nameParts[1].split(/\s+/).length <= 2
         ) {
-          // If first part has 2 words (two surnames) and second has 1 word (given name), reorder to "Nombre Apellidos"
           if (nameParts[0].split(/\s+/).length >= 2 && nameParts[1].split(/\s+/).length === 1) {
             combinedName = `${nameParts[1]} ${nameParts[0]}`;
           } else {
@@ -252,6 +312,7 @@ export function parseSmartStudentInput(
         if (finalName && !isHeaderRow([finalName])) {
           extractedItems.push({
             fullName: finalName,
+            email: detectedEmail || findMatchingStudentEmail(finalName),
             tags: Array.from(new Set(detectedTags)),
           });
         }
@@ -281,6 +342,7 @@ export function parseSmartStudentInput(
     return {
       tempId: `cand-${idx}-${Date.now()}`,
       fullName: item.fullName,
+      email: item.email,
       code,
       tags: Array.from(new Set([...defaultTags, ...item.tags])),
       isDuplicate,
@@ -316,6 +378,8 @@ function extractNameAndInlineTags(raw: string): { fullName: string; tags: string
 
 export function createStudentRecord(params: {
   fullName: string;
+  email?: string;
+  pendingSubjects?: PendingSubjects;
   groupId: string;
   code: string;
   tags?: string[];
@@ -327,10 +391,22 @@ export function createStudentRecord(params: {
       ? crypto.randomUUID()
       : `stu-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+  const cleanName = params.fullName.trim();
+  const resolvedEmail = params.email?.trim() || findMatchingStudentEmail(cleanName) || undefined;
+  const cleanPending =
+    params.pendingSubjects && (params.pendingSubjects.euskera || params.pendingSubjects.lengua)
+      ? {
+          euskera: params.pendingSubjects.euskera || null,
+          lengua: params.pendingSubjects.lengua || null,
+        }
+      : undefined;
+
   return {
     id,
     code: params.code,
-    fullName: params.fullName.trim(),
+    fullName: cleanName,
+    ...(resolvedEmail ? { email: resolvedEmail } : {}),
+    ...(cleanPending ? { pendingSubjects: cleanPending } : {}),
     groupId: params.groupId,
     tags: Array.from(new Set(params.tags || [])),
     notes: params.notes?.trim() || '',

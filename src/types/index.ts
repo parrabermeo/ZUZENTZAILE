@@ -74,6 +74,20 @@ export interface LinguisticCorrection {
   category?: 'orthography' | 'grammar' | 'punctuation' | 'vocabulary';
 }
 
+export type PendingCourseLevel = 'LH4' | 'LH5' | null;
+
+export interface PendingSubjects {
+  euskera?: PendingCourseLevel;
+  lengua?: PendingCourseLevel;
+}
+
+export interface PendingSubjectAssessment {
+  subject: SubjectId;
+  pendingCourse: 'LH4' | 'LH5';
+  sufficient: boolean;
+  justification: string;
+}
+
 export interface AiEvaluationDraft {
   transcription: string;
   criteria: EvaluatedCriterionResult[];
@@ -82,6 +96,7 @@ export interface AiEvaluationDraft {
   improvements: string[];
   linguisticCorrections: LinguisticCorrection[];
   studentFeedback: string;
+  pendingSubjectAssessment?: PendingSubjectAssessment;
 }
 
 export interface StoredImageAsset {
@@ -172,6 +187,7 @@ export interface EvaluationRecord {
   improvements?: string[];
   linguisticCorrections?: LinguisticCorrection[];
   feedbackSummary: string;
+  pendingSubjectAssessment?: PendingSubjectAssessment;
   modelUsed: GeminiModelId;
   reasoningLevel?: ReasoningEffort;
   createdAt?: string;
@@ -181,6 +197,8 @@ export interface Student {
   id: string;
   code: string;
   fullName: string;
+  email?: string;
+  pendingSubjects?: PendingSubjects;
   groupId: string;
   tags: string[];
   notes: string;
