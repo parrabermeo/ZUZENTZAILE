@@ -26,7 +26,9 @@ import {
   BookOpen,
   PenTool,
   GraduationCap,
+  Mail,
   MailCheck,
+  Send,
 } from 'lucide-react';
 import type {
   AppSettings,
@@ -55,6 +57,9 @@ import {
   mergeUniqueReferenceImages,
 } from '../utils/referenceImages';
 import { optimizeImageForStorage } from '../utils/imageOptimizer';
+import { findMatchingStudentEmail } from '../data/studentEmailDirectory';
+import { buildStudentReportEmail } from '../utils/reportEmail';
+import { getValidGmailAccessToken, sendEvaluationEmail } from '../services/gmailService';
 import { AddLateSubmissionModal } from './AddLateSubmissionModal';
 
 export interface GroupedTestEntry {
@@ -229,6 +234,7 @@ interface TestHistoryModuleProps {
     savedTestId?: string
   ) => void;
   onDeleteSingleEvaluation: (studentId: string, evaluationId: string) => void;
+  onMarkEvaluationEmailSent: (studentId: string, evaluationId: string, sentAtIso: string) => void;
   onOpenStudentDossier: (studentId: string) => void;
   onGoToEvaluate: () => void;
   onOpenSettings: () => void;
@@ -258,6 +264,7 @@ export const TestHistoryModule: React.FC<TestHistoryModuleProps> = ({
   onUpdateTestSessionImages,
   onDeleteTestSession,
   onDeleteSingleEvaluation,
+  onMarkEvaluationEmailSent,
   onOpenStudentDossier,
   onGoToEvaluate,
   onOpenSettings,
@@ -281,6 +288,17 @@ export const TestHistoryModule: React.FC<TestHistoryModuleProps> = ({
   const [pendingDeleteSession, setPendingDeleteSession] = useState<GroupedTestSession | null>(null);
   const [lateSubmissionSessionKey, setLateSubmissionSessionKey] = useState<string | null>(null);
   const [uploadingSessionKey, setUploadingSessionKey] = useState<string | null>(null);
+  const [bulkEmailDialog, setBulkEmailDialog] = useState<{
+    session: GroupedTestSession;
+    mode: 'pending' | 'all';
+  } | null>(null);
+  const [bulkSendProgress, setBulkSendProgress] = useState<{
+    sessionKey: string;
+    sessionTitle: string;
+    current: number;
+    total: number;
+    currentStudentName: string;
+  } | null>(null);
   const [lightbox, setLightbox] = useState<{
     images: StoredImageAsset[];
     index: number;
@@ -505,6 +523,170 @@ export const TestHistoryModule: React.FC<TestHistoryModuleProps> = ({
     }
   };
 
+  const resolveEntryEmail = (entry: GroupedTestEntry): string => {
+    const freshStudent = students.find((s) => s.id === entry.student.id) || entry.student;
+    const raw = (
+      freshStudent.email ||
+      findMatchingStudentEmail(freshStudent.fullName) ||
+      ''
+    ).trim();
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw) ? raw : '';
+  };
+
+  const analyzeSessionRecipients = (session: GroupedTestSession) => {
+    const withValidEmail: Array<{ entry: GroupedTestEntry; email: string }> = [];
+    const missingEmail: GroupedTestEntry[] = [];
+
+    for (const entry of session.entries) {
+      const email = resolveEntryEmail(entry);
+      if (email) {
+        withValidEmail.push({ entry, email });
+      } else {
+        missingEmail.push(entry);
+      }
+    }
+
+    const alreadySent = withValidEmail.filter((item) => Boolean(item.entry.evaluation.emailSentAt));
+    const pendingSend = withValidEmail.filter((item) => !item.entry.evaluation.emailSentAt);
+
+    return {
+      withValidEmail,
+      missingEmail,
+      alreadySent,
+      pendingSend,
+    };
+  };
+
+  const handleOpenBulkEmailDialog = (session: GroupedTestSession) => {
+    if (bulkSendProgress) return;
+    const analysis = analyzeSessionRecipients(session);
+    const defaultMode: 'pending' | 'all' =
+      analysis.alreadySent.length > 0 && analysis.pendingSend.length > 0 ? 'pending' : 'all';
+    setBulkEmailDialog({
+      session,
+      mode: defaultMode,
+    });
+  };
+
+  const handleConfirmBulkEmailSend = async () => {
+    if (!bulkEmailDialog || bulkSendProgress) return;
+    const { session, mode } = bulkEmailDialog;
+    const analysis = analyzeSessionRecipients(session);
+    const targets =
+      mode === 'pending' && analysis.alreadySent.length > 0 && analysis.pendingSend.length > 0
+        ? analysis.pendingSend
+        : analysis.withValidEmail;
+
+    if (targets.length === 0) {
+      onNotify(t.history.bulkEmailModal.noValidEmailsError, 'warning');
+      return;
+    }
+
+    console.log(
+      `[BulkEmail] Iniciando envío masivo para "${session.title}": ${targets.length} destinatarios (modo=${mode})`
+    );
+
+    // Close modal and acquire a valid Gmail OAuth token ONCE before iterating
+    setBulkEmailDialog(null);
+    setBulkSendProgress({
+      sessionKey: session.key,
+      sessionTitle: session.title,
+      current: 0,
+      total: targets.length,
+      currentStudentName: targets[0].entry.student.fullName,
+    });
+
+    try {
+      await getValidGmailAccessToken();
+    } catch (err) {
+      console.error('[BulkEmail] Error obteniendo token OAuth de Gmail:', err);
+      const rawMsg = err instanceof Error ? err.message : String(err);
+      setBulkSendProgress(null);
+      onNotify(t.history.bulkEmailAuthError(rawMsg), 'error');
+      return;
+    }
+
+    let sentCount = 0;
+    const failures: Array<{ studentName: string; email: string; error: string }> = [];
+
+    try {
+      for (let i = 0; i < targets.length; i++) {
+        const { entry, email } = targets[i];
+        const ev = entry.evaluation;
+        const freshStudent = students.find((s) => s.id === entry.student.id) || entry.student;
+
+        setBulkSendProgress({
+          sessionKey: session.key,
+          sessionTitle: session.title,
+          current: i + 1,
+          total: targets.length,
+          currentStudentName: freshStudent.fullName,
+        });
+
+        try {
+          const built = buildStudentReportEmail({
+            studentName: freshStudent.fullName,
+            studentEmail: email,
+            asignatura: resolveEvaluationSubject(ev),
+            testTitle: ev.title,
+            language: ev.language,
+            strengths: ev.strengths || [],
+            improvements: ev.improvements || [],
+            linguisticCorrections: ev.linguisticCorrections || [],
+            feedbackSummary: ev.feedbackSummary || '',
+          });
+
+          const result = await sendEvaluationEmail({
+            to: built.to,
+            subject: built.subject,
+            body: built.body,
+          });
+
+          sentCount += 1;
+          onMarkEvaluationEmailSent(freshStudent.id, ev.id, result.sentAt);
+          console.log(
+            `[BulkEmail] (${i + 1}/${targets.length}) Enviado a ${freshStudent.fullName} <${built.to}>`
+          );
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          failures.push({
+            studentName: freshStudent.fullName,
+            email,
+            error: errMsg,
+          });
+          console.error(
+            `[BulkEmail] (${i + 1}/${targets.length}) Error enviando a ${freshStudent.fullName} <${email}>:`,
+            err
+          );
+        }
+
+        // Respect Gmail API rate limits with a 600ms pause between consecutive messages
+        if (i < targets.length - 1) {
+          await new Promise<void>((resolve) => {
+            window.setTimeout(resolve, 600);
+          });
+        }
+      }
+    } finally {
+      setBulkSendProgress(null);
+    }
+
+    if (failures.length === 0) {
+      onNotify(t.history.bulkEmailSummarySuccess(sentCount, targets.length), 'success');
+    } else {
+      console.warn('[BulkEmail] Resumen de fallos:', failures);
+      onNotify(
+        t.history.bulkEmailSummaryPartial(sentCount, targets.length, failures.length),
+        sentCount > 0 ? 'warning' : 'error'
+      );
+    }
+  };
+
+  const bulkEmailDialogAnalysis = useMemo(
+    () => (bulkEmailDialog ? analyzeSessionRecipients(bulkEmailDialog.session) : null),
+    [bulkEmailDialog, students]
+  );
+
   return (
     <div className="space-y-6">
       {/* Hidden multi-file & direct rear-camera inputs for attaching/updating reference prompt photos */}
@@ -553,6 +735,38 @@ export const TestHistoryModule: React.FC<TestHistoryModuleProps> = ({
           {t.history.goToEvaluate}
         </button>
       </div>
+
+      {/* Active Bulk Email Sending Progress Banner */}
+      {bulkSendProgress && (
+        <div className="rounded-2xl border border-indigo-200 bg-indigo-50/90 p-4 shadow-xs space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2 font-extrabold text-indigo-950 min-w-0">
+              <Loader2 className="h-4 w-4 animate-spin text-indigo-600 shrink-0" />
+              <span className="truncate">
+                {t.history.bulkEmailSendingProgress(
+                  Math.max(1, bulkSendProgress.current),
+                  bulkSendProgress.total
+                )}{' '}
+                · {bulkSendProgress.sessionTitle}
+              </span>
+            </div>
+            <span className="text-[11px] font-semibold text-indigo-700 truncate">
+              {bulkSendProgress.currentStudentName}
+            </span>
+          </div>
+          <div className="h-2 w-full overflow-hidden rounded-full bg-indigo-100">
+            <div
+              className="h-full rounded-full bg-indigo-600 transition-all duration-300"
+              style={{
+                width: `${Math.max(
+                  4,
+                  Math.round((bulkSendProgress.current / Math.max(1, bulkSendProgress.total)) * 100)
+                )}%`,
+              }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* KPI Summary Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -879,7 +1093,7 @@ export const TestHistoryModule: React.FC<TestHistoryModuleProps> = ({
                           </>
                         )}
 
-                        <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
+                        <div className="flex flex-wrap items-center gap-2.5 text-xs text-slate-500">
                           <span className="inline-flex items-center gap-1.5 font-semibold text-slate-700">
                             <Users className="h-3.5 w-3.5 text-slate-400" />
                             {t.history.evaluatedRatio(
@@ -887,6 +1101,61 @@ export const TestHistoryModule: React.FC<TestHistoryModuleProps> = ({
                               session.totalStudentsInGroup
                             )}
                           </span>
+
+                          {session.entries.length > 0 && (() => {
+                            const sentCountInSession = session.entries.filter((e) =>
+                              Boolean(e.evaluation.emailSentAt)
+                            ).length;
+                            const isThisSessionSending =
+                              bulkSendProgress?.sessionKey === session.key;
+                            const allAlreadySent =
+                              sentCountInSession > 0 &&
+                              sentCountInSession === session.entries.length;
+
+                            return (
+                              <>
+                                {sentCountInSession > 0 && (
+                                  <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
+                                    <MailCheck className="h-3 w-3 text-emerald-600" />
+                                    {t.history.bulkEmailSentRatioBadge(
+                                      sentCountInSession,
+                                      session.entries.length
+                                    )}
+                                  </span>
+                                )}
+
+                                <button
+                                  type="button"
+                                  disabled={Boolean(bulkSendProgress)}
+                                  onClick={() => handleOpenBulkEmailDialog(session)}
+                                  className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[11px] font-bold shadow-2xs transition disabled:opacity-60 disabled:cursor-not-allowed ${
+                                    isThisSessionSending
+                                      ? 'bg-indigo-700 text-white cursor-wait'
+                                      : allAlreadySent
+                                        ? 'border border-emerald-300 bg-emerald-600 text-white hover:bg-emerald-700'
+                                        : 'bg-violet-600 text-white hover:bg-violet-700'
+                                  }`}
+                                >
+                                  {isThisSessionSending && bulkSendProgress ? (
+                                    <>
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                                      <span>
+                                        {t.history.bulkEmailSendingProgress(
+                                          Math.max(1, bulkSendProgress.current),
+                                          bulkSendProgress.total
+                                        )}
+                                      </span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Mail className="h-3.5 w-3.5 shrink-0" />
+                                      <span>{t.history.bulkEmailBtn}</span>
+                                    </>
+                                  )}
+                                </button>
+                              </>
+                            );
+                          })()}
                         </div>
                       </div>
                     </div>
@@ -1166,6 +1435,161 @@ export const TestHistoryModule: React.FC<TestHistoryModuleProps> = ({
         onOpenSettings={onOpenSettings}
         onNotify={onNotify}
       />
+
+      {/* Bulk Email Confirmation Modal */}
+      {bulkEmailDialog && bulkEmailDialogAnalysis && (() => {
+        const { session, mode } = bulkEmailDialog;
+        const { withValidEmail, missingEmail, alreadySent, pendingSend } = bulkEmailDialogAnalysis;
+        const showModeSelector = alreadySent.length > 0 && pendingSend.length > 0;
+        const selectedRecipientCount =
+          showModeSelector && mode === 'pending' ? pendingSend.length : withValidEmail.length;
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div
+              className="fixed inset-0 bg-slate-900/55 backdrop-blur-xs"
+              onClick={() => setBulkEmailDialog(null)}
+            />
+            <div className="relative z-10 w-full max-w-lg rounded-2xl border border-indigo-200 bg-white shadow-2xl overflow-hidden">
+              <div className="flex items-start gap-3 border-b border-indigo-100 bg-indigo-50/80 px-6 py-4">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-100 text-indigo-700">
+                  <Mail className="h-5 w-5" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-base font-extrabold text-indigo-950">
+                    {t.history.bulkEmailModal.title}
+                  </h3>
+                  <p className="mt-0.5 text-xs font-semibold text-indigo-700 truncate">
+                    {t.history.bulkEmailModal.subtitle(
+                      session.title,
+                      session.groupName,
+                      session.date
+                    )}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setBulkEmailDialog(null)}
+                  className="rounded-lg p-1 text-indigo-400 hover:bg-indigo-100 hover:text-indigo-700"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-4">
+                {withValidEmail.length === 0 ? (
+                  <div className="flex items-start gap-2.5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs text-rose-800">
+                    <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-rose-600" />
+                    <span className="leading-relaxed font-semibold">
+                      {t.history.bulkEmailModal.noValidEmailsError}
+                    </span>
+                  </div>
+                ) : (
+                  <>
+                    {/* Valid recipient summary */}
+                    <div className="flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50/70 px-4 py-3 text-xs font-bold text-emerald-900">
+                      <MailCheck className="h-4 w-4 shrink-0 text-emerald-600" />
+                      <span>{t.history.bulkEmailModal.willReceiveCount(selectedRecipientCount)}</span>
+                    </div>
+
+                    {/* Already-sent smart filter selector */}
+                    {alreadySent.length > 0 && (
+                      <div className="rounded-xl border border-indigo-200/80 bg-indigo-50/40 p-3.5 space-y-2.5">
+                        <p className="text-xs font-semibold text-indigo-950 leading-relaxed">
+                          {t.history.bulkEmailModal.alreadySentNotice(
+                            alreadySent.length,
+                            pendingSend.length
+                          )}
+                        </p>
+
+                        {showModeSelector && (
+                          <div className="grid grid-cols-1 gap-2">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setBulkEmailDialog((prev) =>
+                                  prev ? { ...prev, mode: 'pending' } : null
+                                )
+                              }
+                              className={`flex items-center justify-between rounded-xl border px-3.5 py-2.5 text-left text-xs font-bold transition ${
+                                mode === 'pending'
+                                  ? 'border-indigo-600 bg-indigo-600 text-white shadow-xs'
+                                  : 'border-slate-200 bg-white text-slate-700 hover:border-indigo-300'
+                              }`}
+                            >
+                              <span>
+                                {t.history.bulkEmailModal.modePendingOnly(pendingSend.length)}
+                              </span>
+                              {mode === 'pending' && <Check className="h-4 w-4 shrink-0" />}
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setBulkEmailDialog((prev) =>
+                                  prev ? { ...prev, mode: 'all' } : null
+                                )
+                              }
+                              className={`flex items-center justify-between rounded-xl border px-3.5 py-2.5 text-left text-xs font-bold transition ${
+                                mode === 'all'
+                                  ? 'border-indigo-600 bg-indigo-600 text-white shadow-xs'
+                                  : 'border-slate-200 bg-white text-slate-700 hover:border-indigo-300'
+                              }`}
+                            >
+                              <span>
+                                {t.history.bulkEmailModal.modeAllStudents(withValidEmail.length)}
+                              </span>
+                              {mode === 'all' && <Check className="h-4 w-4 shrink-0" />}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {/* Students missing an email */}
+                {missingEmail.length > 0 && (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50/80 p-3.5 space-y-1.5">
+                    <div className="flex items-center gap-2 text-xs font-bold text-amber-900">
+                      <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" />
+                      <span>{t.history.bulkEmailModal.missingEmailWarning(missingEmail.length)}</span>
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-amber-800 pl-6 max-h-24 overflow-y-auto">
+                      {missingEmail.map((item) => item.student.fullName).join(', ')}
+                    </p>
+                  </div>
+                )}
+
+                {withValidEmail.length > 0 && (
+                  <p className="text-[11px] leading-relaxed text-slate-500">
+                    {t.history.bulkEmailModal.rateLimitHint}
+                  </p>
+                )}
+
+                <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setBulkEmailDialog(null)}
+                    className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
+                  >
+                    {t.history.bulkEmailModal.cancelBtn}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={selectedRecipientCount === 0}
+                    onClick={() => void handleConfirmBulkEmailSend()}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-violet-600 px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-violet-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <Send className="h-3.5 w-3.5" />
+                    <span>{t.history.bulkEmailModal.confirmSendBtn(selectedRecipientCount)}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Explicit Cascade Delete Confirmation Modal */}
       {pendingDeleteSession && (

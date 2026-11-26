@@ -717,6 +717,42 @@ export const translations = {
       testsCountBadge: (n: number) => (n === 1 ? 'proba 1' : `${n} proba`),
       noTestsInModality: 'Ez dago gordetako probarik trebetasun honetan.',
       hierarchyHint: 'Sakatu gela bat → aukeratu Irakurmena edo Idazmena → ikusi probak.',
+      bulkEmailBtn: 'Bidali txostenak ikasleei',
+      bulkEmailSendingProgress: (current: number, total: number) =>
+        `Bidaltzen ${current}/${total}...`,
+      bulkEmailSentRatioBadge: (sent: number, total: number) =>
+        `${sent}/${total} bidalita`,
+      bulkEmailModal: {
+        title: 'Bidali txostenak ikasleei',
+        subtitle: (title: string, groupName: string, date: string) =>
+          `"${title}" · ${groupName} · ${date}`,
+        willReceiveCount: (n: number) =>
+          n === 1
+            ? 'Ikasle 1ek jasoko du ebaluazio-txostena posta elektronikoz.'
+            : `${n} ikaslek jasoko dute ebaluazio-txostena posta elektronikoz.`,
+        missingEmailWarning: (n: number) =>
+          n === 1
+            ? 'Ikasle 1ek ez du posta elektronikorik konfiguratuta (ez zaio bidaliko):'
+            : `${n} ikaslek ez dute posta elektronikorik konfiguratuta (ez zaie bidaliko):`,
+        noValidEmailsError:
+          'Proba honetako ebaluatutako ikasleetako batek ere ez du posta elektronikorik gordeta. Gehitu haien fitxetan bidali aurretik.',
+        alreadySentNotice: (alreadySent: number, pending: number) =>
+          pending > 0
+            ? `${alreadySent} ikasleri dagoeneko bidali zaie txostena lehenago (${pending} falta dira). Aukeratu nori bidali:`
+            : `Posta duten ${alreadySent} ikasleei dagoeneko bidali zaie txostena lehenago. Guztiei berriro bidal diezaiekezu.`,
+        modePendingOnly: (n: number) => `Falta direnei bakarrik bidali (${n})`,
+        modeAllStudents: (n: number) => `Guztiei bidali, dagoeneko bidalitakoak barne (${n})`,
+        rateLimitHint:
+          'Txosten bakoitza probaren hizkuntzan bidaliko da banan-banan (600 ms-ko tartearekin Gmail-en mugak errespetatzeko).',
+        confirmSendBtn: (n: number) => `Bidali ${n} txosten orain`,
+        cancelBtn: 'Utzi',
+      },
+      bulkEmailAuthError: (detail: string) =>
+        `Ezin izan da Gmail baimena lortu bidalketa masiborako: ${detail}`,
+      bulkEmailSummarySuccess: (sent: number, total: number) =>
+        `Bidalketa masiboa amaituta: ${sent}/${total} txosten zuzen bidali dira posta bidez.`,
+      bulkEmailSummaryPartial: (sent: number, total: number, failed: number) =>
+        `Bidalketa amaituta: ${sent}/${total} bidalita, ${failed} erroreekin. Egiaztatu kontsola xehetasunetarako.`,
     },
     reports: {
       title: 'Txostenak eta Bilakaera (Gela-matrizea)',
@@ -1461,6 +1497,42 @@ export const translations = {
       testsCountBadge: (n: number) => (n === 1 ? '1 prueba' : `${n} pruebas`),
       noTestsInModality: 'No hay pruebas guardadas en esta destreza todavía.',
       hierarchyHint: 'Pulsa en una clase → elige Irakurmena o Idazmena → despliega las pruebas.',
+      bulkEmailBtn: 'Enviar informes al alumnado',
+      bulkEmailSendingProgress: (current: number, total: number) =>
+        `Enviando ${current}/${total}...`,
+      bulkEmailSentRatioBadge: (sent: number, total: number) =>
+        `${sent}/${total} enviados`,
+      bulkEmailModal: {
+        title: 'Enviar informes al alumnado',
+        subtitle: (title: string, groupName: string, date: string) =>
+          `"${title}" · ${groupName} · ${date}`,
+        willReceiveCount: (n: number) =>
+          n === 1
+            ? '1 alumno recibirá su informe de evaluación por correo electrónico.'
+            : `${n} alumnos recibirán su informe de evaluación por correo electrónico.`,
+        missingEmailWarning: (n: number) =>
+          n === 1
+            ? '1 alumno no tiene correo electrónico configurado (se omitirá):'
+            : `${n} alumnos no tienen correo electrónico configurado (se omitirán):`,
+        noValidEmailsError:
+          'Ninguno de los alumnos evaluados en esta prueba tiene correo electrónico guardado. Añádelos en sus fichas antes de enviar.',
+        alreadySentNotice: (alreadySent: number, pending: number) =>
+          pending > 0
+            ? `${alreadySent} alumnos ya tienen el informe enviado anteriormente (faltan ${pending}). Elige a quién enviar:`
+            : `Los ${alreadySent} alumnos con correo ya recibieron este informe anteriormente. Puedes reenviarlo a todos si lo deseas.`,
+        modePendingOnly: (n: number) => `Enviar solo a los que faltan (${n})`,
+        modeAllStudents: (n: number) => `Enviar a todos, incluidos los ya enviados (${n})`,
+        rateLimitHint:
+          'Cada informe se enviará en el idioma de la prueba de forma secuencial (con una pausa de 600 ms para respetar los límites de Gmail).',
+        confirmSendBtn: (n: number) => `Enviar ${n} informes ahora`,
+        cancelBtn: 'Cancelar',
+      },
+      bulkEmailAuthError: (detail: string) =>
+        `No se pudo obtener autorización de Gmail para el envío masivo: ${detail}`,
+      bulkEmailSummarySuccess: (sent: number, total: number) =>
+        `Envío masivo completado: ${sent}/${total} informes enviados correctamente.`,
+      bulkEmailSummaryPartial: (sent: number, total: number, failed: number) =>
+        `Envío finalizado: ${sent}/${total} enviados correctamente y ${failed} con error. Revisa la consola para más detalles.`,
     },
     reports: {
       title: 'Informes y Evolución (Matriz de Grupo)',

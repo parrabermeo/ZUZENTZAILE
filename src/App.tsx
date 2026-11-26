@@ -772,6 +772,27 @@ export function App() {
     pushToast(t.toasts.testSavedWithoutWork(testDef.title), 'success');
   };
 
+  const handleMarkEvaluationEmailSent = (
+    studentId: string,
+    evaluationId: string,
+    sentAtIso: string
+  ) => {
+    const now = new Date().toISOString();
+    setStudents((prev) =>
+      prev.map((s) =>
+        s.id === studentId
+          ? {
+              ...s,
+              evaluations: s.evaluations.map((ev) =>
+                ev.id === evaluationId ? { ...ev, emailSentAt: sentAtIso } : ev
+              ),
+              updatedAt: now,
+            }
+          : s
+      )
+    );
+  };
+
   // Cascade delete all evaluations (and any saved test definition) belonging to a grouped test session
   const handleDeleteTestSession = (
     title: string,
@@ -1318,6 +1339,7 @@ export function App() {
                   onUpdateTestSessionImages={handleUpdateTestSessionImages}
                   onDeleteTestSession={handleDeleteTestSession}
                   onDeleteSingleEvaluation={handleDeleteEvaluation}
+                  onMarkEvaluationEmailSent={handleMarkEvaluationEmailSent}
                   onOpenStudentDossier={(studentId) => setActiveDossierStudentId(studentId)}
                   onGoToEvaluate={() => handleSelectNavTab('evaluate')}
                   onOpenSettings={() => setSettingsOpen(true)}
