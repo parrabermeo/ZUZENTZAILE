@@ -303,7 +303,7 @@ export const translations = {
       emailSentBadge: 'Bidalia',
       copyReportBtn: 'Kopiatu txostena',
       copiedReportBtn: 'Txostena kopiatuta!',
-      noEmailWarning: 'Ikasle honek ez du posta elektronikorik gordeta.',
+      noEmailWarning: 'Ikasle honek ez du posta elektronikorik gordeta. Gehitu bere fitxan.',
       addEmailAction: 'Gehitu posta',
       pendingEvalCardTitle: (subject: string, course: string) =>
         `Aurreko mailako balorazioa · ${subject} (${course} zain)`,
@@ -1045,7 +1045,7 @@ export const translations = {
       emailSentBadge: 'Enviado',
       copyReportBtn: 'Copiar informe',
       copiedReportBtn: '¡Informe copiado!',
-      noEmailWarning: 'Este alumno no tiene correo electrónico registrado.',
+      noEmailWarning: 'Este alumno no tiene correo guardado. Añádelo en su ficha.',
       addEmailAction: 'Añadir correo',
       pendingEvalCardTitle: (subject: string, course: string) =>
         `Valoración de materia pendiente · ${subject} (${course})`,

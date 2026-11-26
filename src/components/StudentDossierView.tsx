@@ -399,13 +399,20 @@ export const StudentDossierView: React.FC<StudentDossierViewProps> = ({
             <EvaluationEditorPanel
               draft={editingDraft}
               rubric={activeRubric}
+              student={student}
               studentName={student.fullName}
+              studentEmail={student.email}
+              asignatura={resolveEvaluationSubject(ev)}
+              testTitle={editingTitle.trim() || ev.title}
+              evalLanguage={ev.language}
               modelUsed={ev.modelUsed}
               reasoningLevel={ev.reasoningLevel || 'medium'}
               hasNextPending={false}
               isSaved={false}
               embedded
               onChangeDraft={setEditingDraft}
+              onEditStudentEmail={() => onEditStudent(student)}
+              onNotify={onNotify}
               t={t}
             />
           </div>
@@ -794,6 +801,7 @@ export const StudentDossierView: React.FC<StudentDossierViewProps> = ({
               </div>
 
               <EmailReportButtons
+                student={student}
                 studentName={student.fullName}
                 studentEmail={student.email}
                 asignatura={resolveEvaluationSubject(ev)}

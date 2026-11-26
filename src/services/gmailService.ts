@@ -85,7 +85,7 @@ export async function getValidGmailAccessToken(options?: {
   const result = await reauthenticateWithPopup(currentUser, provider);
   const freshToken = extractAndStoreGmailTokenFromResult(result);
   if (!freshToken) {
-    throw new Error('GMAIL_TOKEN_MISSING');
+    throw new Error('No se recibió un accessToken OAuth válido tras la autenticación con Google.');
   }
   return freshToken;
 }
@@ -180,11 +180,26 @@ export async function sendEvaluationEmail(
   let token = await getValidGmailAccessToken();
   let response = await postGmailSendRequest(token, rawBase64Url);
 
-  // If token expired or lacked gmail.send scope (401/403 insufficient scope), refresh via popup & retry once
-  if (response.status === 401) {
-    clearGmailAccessToken();
-    token = await getValidGmailAccessToken({ forceRefresh: true });
-    response = await postGmailSendRequest(token, rawBase64Url);
+  // If token expired (401) or lacked gmail.send scope (403 insufficient scope), refresh via popup & retry once
+  if (response.status === 401 || response.status === 403) {
+    const clonedText = await response
+      .clone()
+      .text()
+      .catch(() => '');
+    const isScopeIssue =
+      response.status === 401 ||
+      clonedText.toLowerCase().includes('insufficient') ||
+      clonedText.toLowerCase().includes('scope') ||
+      clonedText.toLowerCase().includes('unauthorized');
+
+    if (isScopeIssue) {
+      console.warn(
+        `[Gmail] Token rechazado (HTTP ${response.status}), renovando permiso gmail.send via reauthenticateWithPopup...`
+      );
+      clearGmailAccessToken();
+      token = await getValidGmailAccessToken({ forceRefresh: true });
+      response = await postGmailSendRequest(token, rawBase64Url);
+    }
   }
 
   if (!response.ok) {
@@ -194,7 +209,7 @@ export async function sendEvaluationEmail(
         error?: { message?: string; status?: string };
       };
       if (errJson?.error?.message) {
-        apiErrorMsg = errJson.error.message;
+        apiErrorMsg = `${errJson.error.message} (HTTP ${response.status})`;
       }
     } catch {
       // Fallback to HTTP status

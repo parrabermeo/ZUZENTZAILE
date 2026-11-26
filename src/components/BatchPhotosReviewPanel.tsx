@@ -825,6 +825,7 @@ export const BatchPhotosReviewPanel: React.FC<BatchPhotosReviewPanelProps> = ({
                       <EvaluationEditorPanel
                         draft={item.draft}
                         rubric={activeRubric}
+                        student={matchedStudent}
                         studentName={
                           matchedStudent
                             ? matchedStudent.fullName

@@ -19,6 +19,7 @@ import type {
   Student,
 } from '../types';
 import { createDefaultGroups } from '../data/sampleData';
+import { findMatchingStudentEmail } from '../data/studentEmailDirectory';
 import { setSyncedGeminiApiKey } from './geminiService';
 import { migrateWorkspaceState, type WorkspaceState } from './storageService';
 import {
@@ -584,6 +585,32 @@ export function subscribeToFirestoreWorkspace(
   let lastEmittedHash = '';
   let emitTimer: number | null = null;
   let disposed = false;
+  const backfilledStudentEmailIds = new Set<string>();
+
+  const backfillMissingEmailsToCloud = async (
+    missingEntries: Array<{ id: string; email: string }>
+  ) => {
+    if (missingEntries.length === 0) return;
+    try {
+      for (let i = 0; i < missingEntries.length; i += MAX_BATCH_OPS) {
+        const chunk = missingEntries.slice(i, i + MAX_BATCH_OPS);
+        const batch = writeBatch(db);
+        for (const item of chunk) {
+          batch.set(
+            doc(db, FIRESTORE_COLLECTIONS.STUDENTS, item.id),
+            { email: item.email },
+            { merge: true }
+          );
+        }
+        await batch.commit();
+      }
+      console.log(
+        `[Firestore] Backfilled ${missingEntries.length} Excel student emails into '${FIRESTORE_COLLECTIONS.STUDENTS}'`
+      );
+    } catch (err) {
+      console.warn('[Firestore] Failed to backfill Excel student emails:', err);
+    }
+  };
 
   const flushEmit = () => {
     if (disposed) return;
@@ -645,6 +672,22 @@ export function subscribeToFirestoreWorkspace(
     };
 
     const { state: migrated } = migrateWorkspaceState(rawState);
+
+    // Ensure Excel-matched emails missing on raw Firestore `alumnos` docs are persisted to the cloud
+    const missingEmailsToPersist: Array<{ id: string; email: string }> = [];
+    for (const rawStudent of studentsMap.values()) {
+      if (!rawStudent.email?.trim() && !backfilledStudentEmailIds.has(rawStudent.id)) {
+        const matchedEmail = findMatchingStudentEmail(rawStudent.fullName);
+        if (matchedEmail) {
+          backfilledStudentEmailIds.add(rawStudent.id);
+          missingEmailsToPersist.push({ id: rawStudent.id, email: matchedEmail });
+        }
+      }
+    }
+    if (missingEmailsToPersist.length > 0) {
+      void backfillMissingEmailsToCloud(missingEmailsToPersist);
+    }
+
     const { serialized } = serializeWorkspaceToDocMaps(migrated);
     const incomingHash = computeCanonicalMapsHash(serialized);
     const knownHash = computeCanonicalMapsHash(lastKnownDocs);

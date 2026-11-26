@@ -1125,6 +1125,7 @@ export const AddLateSubmissionModal: React.FC<AddLateSubmissionModalProps> = ({
                   <EvaluationEditorPanel
                     draft={draft}
                     rubric={activeRubric}
+                    student={selectedStudent}
                     studentName={selectedStudent.fullName}
                     studentEmail={selectedStudent.email}
                     asignatura={session.asignatura}

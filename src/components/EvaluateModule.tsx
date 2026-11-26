@@ -2187,6 +2187,7 @@ export const EvaluateModule: React.FC<EvaluateModuleProps> = ({
         <EvaluationEditorPanel
           draft={draft}
           rubric={activeRubric}
+          student={selectedStudent}
           studentName={selectedStudent.fullName}
           studentEmail={selectedStudent.email}
           asignatura={activeSubject}

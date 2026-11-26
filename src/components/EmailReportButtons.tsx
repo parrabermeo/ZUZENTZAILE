@@ -1,11 +1,13 @@
 import React, { useState } from 'react';
 import { Mail, MailCheck, Copy, Check, AlertCircle, Pencil, Loader2 } from 'lucide-react';
-import type { Language, LinguisticCorrection, SubjectId } from '../types';
+import type { Language, LinguisticCorrection, Student, SubjectId } from '../types';
 import type { Translations } from '../i18n/translations';
+import { findMatchingStudentEmail } from '../data/studentEmailDirectory';
 import { buildStudentReportEmail } from '../utils/reportEmail';
 import { sendEvaluationEmail } from '../services/gmailService';
 
 interface EmailReportButtonsProps {
+  student?: Student;
   studentName: string;
   studentEmail?: string;
   asignatura: SubjectId;
@@ -38,6 +40,7 @@ function formatSentStamp(iso: string): string {
 }
 
 export const EmailReportButtons: React.FC<EmailReportButtonsProps> = ({
+  student,
   studentName,
   studentEmail,
   asignatura,
@@ -61,11 +64,17 @@ export const EmailReportButtons: React.FC<EmailReportButtonsProps> = ({
   const [localSentAt, setLocalSentAt] = useState<string | undefined>(emailSentAt);
 
   const effectiveSentAt = emailSentAt || localSentAt;
-  const hasEmail = Boolean(studentEmail?.trim());
+  const resolvedEmail = (
+    student?.email ||
+    studentEmail ||
+    findMatchingStudentEmail(student?.fullName || studentName) ||
+    ''
+  ).trim();
+  const hasEmail = Boolean(resolvedEmail);
 
   const built = buildStudentReportEmail({
-    studentName,
-    studentEmail,
+    studentName: student?.fullName || studentName,
+    studentEmail: resolvedEmail,
     asignatura,
     testTitle,
     language,
@@ -75,12 +84,21 @@ export const EmailReportButtons: React.FC<EmailReportButtonsProps> = ({
     feedbackSummary,
   });
 
-  const handleSendEmail = async () => {
+  const handleSendEmail = async (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
+    console.log(
+      '[Email] Pulsado Bidali posta bidez para:',
+      student || { fullName: studentName, email: resolvedEmail },
+      { resolvedEmail, testTitle, asignatura, language }
+    );
+
     if (sending) return;
     setSendError(null);
 
     if (!hasEmail) {
       setShowMissingEmailAlert(true);
+      console.warn('[Email] Alumno sin correo electrónico registrado:', studentName);
+      onNotify?.(t.dossier.noEmailWarning, 'warning');
       return;
     }
 
@@ -93,27 +111,32 @@ export const EmailReportButtons: React.FC<EmailReportButtonsProps> = ({
         body: built.body,
       });
 
+      console.log('[Email] Correo enviado con éxito vía Gmail API:', {
+        to: built.to,
+        messageId: result.messageId,
+        sentAt: result.sentAt,
+      });
+
       setLocalSentAt(result.sentAt);
       onEmailSent?.(result.sentAt);
       onNotify?.(t.toasts.emailSentSuccess(built.to), 'success');
     } catch (err) {
+      console.error('[Email] Error al enviar correo vía Gmail API:', err);
       const code =
         err && typeof err === 'object' && 'code' in err
           ? String((err as { code?: string }).code || '')
           : '';
-      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
-        setSending(false);
-        return;
-      }
-      const msg = err instanceof Error ? err.message : String(err);
-      setSendError(msg);
-      onNotify?.(t.toasts.emailSendError(msg), 'error');
+      const rawMsg = err instanceof Error ? err.message : String(err);
+      const displayMsg = code && !rawMsg.includes(code) ? `${rawMsg} (${code})` : rawMsg;
+      setSendError(displayMsg);
+      onNotify?.(t.toasts.emailSendError(displayMsg), 'error');
     } finally {
       setSending(false);
     }
   };
 
-  const handleCopyReport = async () => {
+  const handleCopyReport = async (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
     try {
       await navigator.clipboard.writeText(built.plainTextForClipboard);
       setCopied(true);
@@ -139,15 +162,15 @@ export const EmailReportButtons: React.FC<EmailReportButtonsProps> = ({
   const sentStamp = effectiveSentAt ? formatSentStamp(effectiveSentAt) : '';
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-2" onClick={(e) => e.stopPropagation()}>
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
           disabled={sending}
-          onClick={() => void handleSendEmail()}
+          onClick={(e) => void handleSendEmail(e)}
           title={hasEmail ? built.to : t.dossier.noEmailWarning}
-          className={`inline-flex items-center justify-center gap-1.5 rounded-xl font-bold transition min-h-[34px] disabled:opacity-70 disabled:cursor-wait ${
-            compact ? 'px-2.5 py-1.5 text-[11px]' : 'px-3.5 py-2 text-xs'
+          className={`inline-flex items-center justify-center gap-1.5 rounded-xl font-bold transition min-h-[36px] disabled:opacity-70 disabled:cursor-wait ${
+            compact ? 'px-3 py-1.5 text-[11px]' : 'px-3.5 py-2 text-xs'
           } ${
             !hasEmail
               ? 'border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
@@ -176,8 +199,8 @@ export const EmailReportButtons: React.FC<EmailReportButtonsProps> = ({
 
         <button
           type="button"
-          onClick={() => void handleCopyReport()}
-          className={`inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white font-semibold text-slate-700 hover:border-indigo-300 hover:bg-indigo-50/50 hover:text-indigo-800 transition min-h-[34px] ${
+          onClick={(e) => void handleCopyReport(e)}
+          className={`inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white font-semibold text-slate-700 hover:border-indigo-300 hover:bg-indigo-50/50 hover:text-indigo-800 transition min-h-[36px] ${
             compact ? 'px-2.5 py-1.5 text-[11px]' : 'px-3 py-2 text-xs'
           }`}
         >

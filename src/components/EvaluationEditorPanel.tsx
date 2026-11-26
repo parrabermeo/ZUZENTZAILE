@@ -24,6 +24,7 @@ import type {
   LinguisticCorrection,
   ReasoningEffort,
   Rubric,
+  Student,
   SubjectId,
 } from '../types';
 import type { Translations } from '../i18n/translations';
@@ -34,6 +35,7 @@ import { EmailReportButtons } from './EmailReportButtons';
 interface EvaluationEditorPanelProps {
   draft: AiEvaluationDraft;
   rubric: Rubric;
+  student?: Student;
   studentName: string;
   studentEmail?: string;
   asignatura?: SubjectId;
@@ -74,6 +76,7 @@ const LEVEL_BUTTON_STYLES: Record<1 | 2 | 3 | 4, { active: string; idle: string 
 export const EvaluationEditorPanel: React.FC<EvaluationEditorPanelProps> = ({
   draft,
   rubric,
+  student,
   studentName,
   studentEmail,
   asignatura,
@@ -669,6 +672,7 @@ export const EvaluationEditorPanel: React.FC<EvaluationEditorPanelProps> = ({
           {/* 7. Send / Copy Student Evaluation Report via Email */}
           <section className="rounded-2xl border border-indigo-200/80 bg-indigo-50/35 p-3.5">
             <EmailReportButtons
+              student={student}
               studentName={studentName}
               studentEmail={studentEmail}
               asignatura={resolvedSubject}
