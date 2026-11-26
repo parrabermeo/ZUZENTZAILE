@@ -191,6 +191,7 @@ export function App() {
       const allowed = ALLOWED_TEACHER_EMAIL.trim().toLowerCase();
 
       if (!email || email !== allowed) {
+        clearGmailAccessToken();
         await signOut(auth).catch(() => undefined);
         if (!active) return;
         setAuthUser(null);

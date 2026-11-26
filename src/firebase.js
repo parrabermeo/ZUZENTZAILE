@@ -19,11 +19,11 @@ export const firebaseConfig = {
 
 /**
  * Private teacher allowlist email.
- * Replace "TU_CORREO@gmail.com" with your real Google email (or define VITE_ALLOWED_EMAIL in .env).
+ * Defaults to the school corporate Google Workspace account (can be overridden via VITE_ALLOWED_EMAIL in .env).
  */
 export const ALLOWED_TEACHER_EMAIL =
   (import.meta.env.VITE_ALLOWED_EMAIL && import.meta.env.VITE_ALLOWED_EMAIL.trim()) ||
-  'parrabermeo@gmail.com';
+  'parra.ander@ignacioaldekoa.net';
 
 export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
