@@ -599,6 +599,7 @@ export const AddLateSubmissionModal: React.FC<AddLateSubmissionModalProps> = ({
         ...(item.draft.pendingSubjectAssessment
           ? { pendingSubjectAssessment: item.draft.pendingSubjectAssessment }
           : {}),
+        ...(item.draft.emailSentAt ? { emailSentAt: item.draft.emailSentAt } : {}),
         modelUsed: settings.geminiModel,
         reasoningLevel: 'low',
         createdAt: now,
@@ -751,6 +752,7 @@ export const AddLateSubmissionModal: React.FC<AddLateSubmissionModalProps> = ({
       ...(draft.pendingSubjectAssessment
         ? { pendingSubjectAssessment: draft.pendingSubjectAssessment }
         : {}),
+      ...(draft.emailSentAt ? { emailSentAt: draft.emailSentAt } : {}),
       modelUsed: settings.geminiModel,
       reasoningLevel: 'medium',
       createdAt: new Date().toISOString(),
@@ -915,6 +917,7 @@ export const AddLateSubmissionModal: React.FC<AddLateSubmissionModalProps> = ({
               highlightUpload={batchPhotos.length === 0}
               highlightEvaluate={batchPhotos.length > 0 && !batchProcessing && batchItems.length === 0}
               testTitle={session.title}
+              onNotify={onNotify}
               t={t}
             />
           ) : (
@@ -1133,6 +1136,7 @@ export const AddLateSubmissionModal: React.FC<AddLateSubmissionModalProps> = ({
                     isSaved={false}
                     embedded
                     onChangeDraft={setDraft}
+                    onNotify={onNotify}
                     t={t}
                   />
 

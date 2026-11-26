@@ -708,6 +708,7 @@ export const EvaluateModule: React.FC<EvaluateModuleProps> = ({
       ...(draft.pendingSubjectAssessment
         ? { pendingSubjectAssessment: draft.pendingSubjectAssessment }
         : {}),
+      ...(draft.emailSentAt ? { emailSentAt: draft.emailSentAt } : {}),
       modelUsed: settings.geminiModel,
       reasoningLevel,
       createdAt: new Date().toISOString(),
@@ -1160,6 +1161,7 @@ export const EvaluateModule: React.FC<EvaluateModuleProps> = ({
         ...(item.draft.pendingSubjectAssessment
           ? { pendingSubjectAssessment: item.draft.pendingSubjectAssessment }
           : {}),
+        ...(item.draft.emailSentAt ? { emailSentAt: item.draft.emailSentAt } : {}),
         modelUsed: settings.geminiModel,
         reasoningLevel: 'low',
         createdAt: now,
@@ -1902,6 +1904,7 @@ export const EvaluateModule: React.FC<EvaluateModuleProps> = ({
                   step3Done && step5HasWork && !batchProcessing && batchItems.length === 0
                 }
                 testTitle={activityTitle.trim() || activeRubric.title}
+                onNotify={onNotify}
                 t={t}
               />
             ) : (
@@ -2204,6 +2207,7 @@ export const EvaluateModule: React.FC<EvaluateModuleProps> = ({
               clearWorkForNextStudent();
             }
           }}
+          onNotify={onNotify}
           t={t}
         />
       )}

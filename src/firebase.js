@@ -29,7 +29,10 @@ export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfi
 
 export const auth = getAuth(app);
 
+export const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
+
 export const googleProvider = new GoogleAuthProvider();
+googleProvider.addScope(GMAIL_SEND_SCOPE);
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
 function initDbWithPersistence() {

@@ -13,6 +13,7 @@ export declare const firebaseConfig: {
 };
 
 export declare const ALLOWED_TEACHER_EMAIL: string;
+export declare const GMAIL_SEND_SCOPE: string;
 export declare const app: FirebaseApp;
 export declare const auth: Auth;
 export declare const googleProvider: GoogleAuthProvider;

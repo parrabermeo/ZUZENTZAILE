@@ -21,6 +21,7 @@ import {
   Square,
   RefreshCw,
   Trash2,
+  MailCheck,
 } from 'lucide-react';
 import type {
   AiEvaluationDraft,
@@ -79,6 +80,7 @@ interface BatchPhotosReviewPanelProps {
   highlightUpload?: boolean;
   highlightEvaluate?: boolean;
   testTitle?: string;
+  onNotify?: (message: string, type?: 'success' | 'info' | 'warning' | 'error') => void;
   t: Translations;
 }
 
@@ -113,6 +115,7 @@ export const BatchPhotosReviewPanel: React.FC<BatchPhotosReviewPanelProps> = ({
   highlightUpload = false,
   highlightEvaluate = false,
   testTitle,
+  onNotify,
   t,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -778,6 +781,13 @@ export const BatchPhotosReviewPanel: React.FC<BatchPhotosReviewPanelProps> = ({
                     </div>
 
                     <div className="flex items-center justify-between lg:justify-end gap-2.5 shrink-0">
+                      {item.draft.emailSentAt && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-indigo-50 border border-indigo-200 px-2 py-0.5 text-[10px] font-bold text-indigo-800">
+                          <MailCheck className="h-3 w-3 text-indigo-600" />
+                          {t.dossier.emailSentBadge}
+                        </span>
+                      )}
+
                       {item.saved && (
                         <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-bold text-emerald-800">
                           <CheckCircle2 className="h-3.5 w-3.5" />
@@ -836,6 +846,7 @@ export const BatchPhotosReviewPanel: React.FC<BatchPhotosReviewPanelProps> = ({
                             saved: false,
                           }))
                         }
+                        onNotify={onNotify}
                         t={t}
                       />
                     </div>

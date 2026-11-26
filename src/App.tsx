@@ -60,6 +60,10 @@ import {
 } from './services/firestoreSyncService';
 import { getEnvGeminiApiKey, setSyncedGeminiApiKey } from './services/geminiService';
 import {
+  clearGmailAccessToken,
+  extractAndStoreGmailTokenFromResult,
+} from './services/gmailService';
+import {
   getLinkedMasterFileState,
   isFileSystemAccessSupported,
   linkMasterBackupFile,
@@ -159,15 +163,21 @@ export function App() {
   useEffect(() => {
     let active = true;
 
-    getRedirectResult(auth).catch((err) => {
-      if (!active) return;
-      if (err && typeof err === 'object' && 'code' in err) {
-        const code = String((err as { code?: string }).code || '');
-        if (code && code !== 'auth/popup-closed-by-user') {
-          setAuthError(translations[settingsRef.current.language].auth.popupError);
+    getRedirectResult(auth)
+      .then((redirectRes) => {
+        if (redirectRes) {
+          extractAndStoreGmailTokenFromResult(redirectRes);
         }
-      }
-    });
+      })
+      .catch((err) => {
+        if (!active) return;
+        if (err && typeof err === 'object' && 'code' in err) {
+          const code = String((err as { code?: string }).code || '');
+          if (code && code !== 'auth/popup-closed-by-user') {
+            setAuthError(translations[settingsRef.current.language].auth.popupError);
+          }
+        }
+      });
 
     const unsub = onAuthStateChanged(auth, async (user) => {
       if (!active) return;
@@ -208,7 +218,8 @@ export function App() {
     setSigningIn(true);
     setAuthError(null);
     try {
-      await signInWithPopup(auth, googleProvider);
+      const result = await signInWithPopup(auth, googleProvider);
+      extractAndStoreGmailTokenFromResult(result);
     } catch (err) {
       const code =
         err && typeof err === 'object' && 'code' in err
@@ -237,6 +248,7 @@ export function App() {
   const handleSignOut = async () => {
     resetFirestoreSyncCache();
     setSyncedGeminiApiKey('');
+    clearGmailAccessToken();
     hydratedRef.current = false;
     await signOut(auth);
     setAuthUser(null);

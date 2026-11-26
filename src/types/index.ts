@@ -97,6 +97,7 @@ export interface AiEvaluationDraft {
   linguisticCorrections: LinguisticCorrection[];
   studentFeedback: string;
   pendingSubjectAssessment?: PendingSubjectAssessment;
+  emailSentAt?: string;
 }
 
 export interface StoredImageAsset {
@@ -188,6 +189,7 @@ export interface EvaluationRecord {
   linguisticCorrections?: LinguisticCorrection[];
   feedbackSummary: string;
   pendingSubjectAssessment?: PendingSubjectAssessment;
+  emailSentAt?: string;
   modelUsed: GeminiModelId;
   reasoningLevel?: ReasoningEffort;
   createdAt?: string;

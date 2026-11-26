@@ -25,6 +25,7 @@ import {
   ChevronUp,
   Images,
   Mail,
+  MailCheck,
   AlertTriangle,
   CheckCircle2,
   XCircle,
@@ -296,6 +297,7 @@ export const StudentDossierView: React.FC<StudentDossierViewProps> = ({
       ...(ev.pendingSubjectAssessment
         ? { pendingSubjectAssessment: { ...ev.pendingSubjectAssessment } }
         : {}),
+      ...(ev.emailSentAt ? { emailSentAt: ev.emailSentAt } : {}),
     });
   };
 
@@ -327,6 +329,7 @@ export const StudentDossierView: React.FC<StudentDossierViewProps> = ({
       ),
       feedbackSummary: editingDraft.studentFeedback.trim(),
       pendingSubjectAssessment: editingDraft.pendingSubjectAssessment,
+      emailSentAt: editingDraft.emailSentAt || original.emailSentAt,
     };
 
     onUpdateEvaluation(student.id, updated);
@@ -703,6 +706,15 @@ export const StudentDossierView: React.FC<StudentDossierViewProps> = ({
                   )}
                   {modalityPillText}
                 </span>
+                {ev.emailSentAt && (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-800 shrink-0"
+                    title={ev.emailSentAt}
+                  >
+                    <MailCheck className="h-3 w-3 text-emerald-600" />
+                    {t.dossier.emailSentBadge}
+                  </span>
+                )}
               </div>
             )}
             {isExpanded && ev.rubricTitle && (
@@ -791,7 +803,15 @@ export const StudentDossierView: React.FC<StudentDossierViewProps> = ({
                 improvements={ev.improvements || []}
                 linguisticCorrections={ev.linguisticCorrections || []}
                 feedbackSummary={ev.feedbackSummary || ''}
+                emailSentAt={ev.emailSentAt}
+                onEmailSent={(sentAt) =>
+                  onUpdateEvaluation(student.id, {
+                    ...ev,
+                    emailSentAt: sentAt,
+                  })
+                }
                 onEditStudentEmail={() => onEditStudent(student)}
+                onNotify={onNotify}
                 t={t}
                 compact
               />

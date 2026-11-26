@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { Mail, Copy, Check, AlertCircle, Pencil } from 'lucide-react';
+import { Mail, MailCheck, Copy, Check, AlertCircle, Pencil, Loader2 } from 'lucide-react';
 import type { Language, LinguisticCorrection, SubjectId } from '../types';
 import type { Translations } from '../i18n/translations';
 import { buildStudentReportEmail } from '../utils/reportEmail';
+import { sendEvaluationEmail } from '../services/gmailService';
 
 interface EmailReportButtonsProps {
   studentName: string;
@@ -14,9 +15,26 @@ interface EmailReportButtonsProps {
   improvements: string[];
   linguisticCorrections: LinguisticCorrection[];
   feedbackSummary: string;
+  emailSentAt?: string;
+  onEmailSent?: (sentAtIso: string) => void;
   onEditStudentEmail?: () => void;
+  onNotify?: (message: string, type?: 'success' | 'info' | 'warning' | 'error') => void;
   t: Translations;
   compact?: boolean;
+}
+
+function formatSentStamp(iso: string): string {
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '';
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const hours = String(d.getHours()).padStart(2, '0');
+    const mins = String(d.getMinutes()).padStart(2, '0');
+    return `${day}/${month} ${hours}:${mins}`;
+  } catch {
+    return '';
+  }
 }
 
 export const EmailReportButtons: React.FC<EmailReportButtonsProps> = ({
@@ -29,13 +47,20 @@ export const EmailReportButtons: React.FC<EmailReportButtonsProps> = ({
   improvements,
   linguisticCorrections,
   feedbackSummary,
+  emailSentAt,
+  onEmailSent,
   onEditStudentEmail,
+  onNotify,
   t,
   compact = false,
 }) => {
+  const [sending, setSending] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showMissingEmailAlert, setShowMissingEmailAlert] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [localSentAt, setLocalSentAt] = useState<string | undefined>(emailSentAt);
 
+  const effectiveSentAt = emailSentAt || localSentAt;
   const hasEmail = Boolean(studentEmail?.trim());
 
   const built = buildStudentReportEmail({
@@ -50,13 +75,42 @@ export const EmailReportButtons: React.FC<EmailReportButtonsProps> = ({
     feedbackSummary,
   });
 
-  const handleSendEmail = () => {
+  const handleSendEmail = async () => {
+    if (sending) return;
+    setSendError(null);
+
     if (!hasEmail) {
       setShowMissingEmailAlert(true);
       return;
     }
+
     setShowMissingEmailAlert(false);
-    window.location.href = built.mailtoHref;
+    setSending(true);
+    try {
+      const result = await sendEvaluationEmail({
+        to: built.to,
+        subject: built.subject,
+        body: built.body,
+      });
+
+      setLocalSentAt(result.sentAt);
+      onEmailSent?.(result.sentAt);
+      onNotify?.(t.toasts.emailSentSuccess(built.to), 'success');
+    } catch (err) {
+      const code =
+        err && typeof err === 'object' && 'code' in err
+          ? String((err as { code?: string }).code || '')
+          : '';
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+        setSending(false);
+        return;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      setSendError(msg);
+      onNotify?.(t.toasts.emailSendError(msg), 'error');
+    } finally {
+      setSending(false);
+    }
   };
 
   const handleCopyReport = async () => {
@@ -65,7 +119,6 @@ export const EmailReportButtons: React.FC<EmailReportButtonsProps> = ({
       setCopied(true);
       setTimeout(() => setCopied(false), 2200);
     } catch {
-      // Clipboard fallback via temporary textarea
       try {
         const el = document.createElement('textarea');
         el.value = built.plainTextForClipboard;
@@ -83,23 +136,42 @@ export const EmailReportButtons: React.FC<EmailReportButtonsProps> = ({
     }
   };
 
+  const sentStamp = effectiveSentAt ? formatSentStamp(effectiveSentAt) : '';
+
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
-          onClick={handleSendEmail}
+          disabled={sending}
+          onClick={() => void handleSendEmail()}
           title={hasEmail ? built.to : t.dossier.noEmailWarning}
-          className={`inline-flex items-center justify-center gap-1.5 rounded-xl font-bold transition min-h-[34px] ${
+          className={`inline-flex items-center justify-center gap-1.5 rounded-xl font-bold transition min-h-[34px] disabled:opacity-70 disabled:cursor-wait ${
             compact ? 'px-2.5 py-1.5 text-[11px]' : 'px-3.5 py-2 text-xs'
           } ${
-            hasEmail
-              ? 'bg-indigo-600 text-white shadow-2xs hover:bg-indigo-700'
-              : 'border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
+            !hasEmail
+              ? 'border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
+              : effectiveSentAt
+                ? 'border border-emerald-300 bg-emerald-600 text-white shadow-2xs hover:bg-emerald-700'
+                : 'bg-indigo-600 text-white shadow-2xs hover:bg-indigo-700'
           }`}
         >
-          <Mail className="h-3.5 w-3.5 shrink-0" />
-          <span>{t.dossier.sendEmailBtn}</span>
+          {sending ? (
+            <>
+              <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+              <span>{t.dossier.sendingEmailBtn}</span>
+            </>
+          ) : effectiveSentAt ? (
+            <>
+              <MailCheck className="h-3.5 w-3.5 shrink-0" />
+              <span>{t.dossier.resendEmailBtn}</span>
+            </>
+          ) : (
+            <>
+              <Mail className="h-3.5 w-3.5 shrink-0" />
+              <span>{t.dossier.sendEmailBtn}</span>
+            </>
+          )}
         </button>
 
         <button
@@ -121,6 +193,16 @@ export const EmailReportButtons: React.FC<EmailReportButtonsProps> = ({
             </>
           )}
         </button>
+
+        {effectiveSentAt && (
+          <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-800">
+            <MailCheck className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+            <span>
+              {t.dossier.emailSentBadge}
+              {sentStamp ? ` · ${sentStamp}` : ''}
+            </span>
+          </span>
+        )}
       </div>
 
       {showMissingEmailAlert && !hasEmail && (
@@ -142,6 +224,13 @@ export const EmailReportButtons: React.FC<EmailReportButtonsProps> = ({
               {t.dossier.addEmailAction}
             </button>
           )}
+        </div>
+      )}
+
+      {sendError && (
+        <div className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-800">
+          <AlertCircle className="h-3.5 w-3.5 text-rose-600 shrink-0 mt-0.5" />
+          <span className="break-words font-medium">{t.toasts.emailSendError(sendError)}</span>
         </div>
       )}
     </div>

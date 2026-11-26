@@ -26,6 +26,7 @@ import {
   BookOpen,
   PenTool,
   GraduationCap,
+  MailCheck,
 } from 'lucide-react';
 import type {
   AppSettings,
@@ -985,6 +986,17 @@ export const TestHistoryModule: React.FC<TestHistoryModuleProps> = ({
                             </div>
 
                             <div className="flex items-center gap-2.5 shrink-0">
+                              {entry.evaluation.emailSentAt && (
+                                <span
+                                  className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-800"
+                                  title={entry.evaluation.emailSentAt}
+                                >
+                                  <MailCheck className="h-3 w-3 text-emerald-600" />
+                                  <span className="hidden sm:inline">
+                                    {t.dossier.emailSentBadge}
+                                  </span>
+                                </span>
+                              )}
                               <span
                                 className={`rounded-lg border px-2.5 py-0.5 text-xs font-extrabold ${getScoreBadgeClasses(
                                   entry.evaluation.overallScore

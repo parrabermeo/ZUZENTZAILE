@@ -48,6 +48,7 @@ interface EvaluationEditorPanelProps {
   onSave?: (goToNextPending: boolean) => void;
   onGoToNextPending?: () => void;
   onEditStudentEmail?: () => void;
+  onNotify?: (message: string, type?: 'success' | 'info' | 'warning' | 'error') => void;
   t: Translations;
 }
 
@@ -87,6 +88,7 @@ export const EvaluationEditorPanel: React.FC<EvaluationEditorPanelProps> = ({
   onSave,
   onGoToNextPending,
   onEditStudentEmail,
+  onNotify,
   t,
 }) => {
   const [copiedFeedback, setCopiedFeedback] = useState(false);
@@ -676,7 +678,10 @@ export const EvaluationEditorPanel: React.FC<EvaluationEditorPanelProps> = ({
               improvements={draft.improvements}
               linguisticCorrections={draft.linguisticCorrections}
               feedbackSummary={draft.studentFeedback}
+              emailSentAt={draft.emailSentAt}
+              onEmailSent={(sentAt) => onChangeDraft({ ...draft, emailSentAt: sentAt })}
               onEditStudentEmail={onEditStudentEmail}
+              onNotify={onNotify}
               t={t}
             />
           </section>
